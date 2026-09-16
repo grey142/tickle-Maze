@@ -42,7 +42,7 @@ html, body {
   align-items: center;
   justify-content: center;
   width: 100%;
-  max-width: 900px;
+  max-width: 1680px;
   padding: 12px;
 }
 .screen.active { display: flex; }
@@ -132,7 +132,7 @@ kbd {
   justify-content: space-between;
   gap: 10px;
   width: 100%;
-  max-width: 800px;
+  max-width: 1600px;
   background: var(--panel);
   border: 1px solid #3a2a50;
   border-radius: 12px;
@@ -176,9 +176,9 @@ kbd {
 
 #game-canvas {
   width: 100%;
-  max-width: 800px;
+  max-width: 1600px;
   height: auto;
-  aspect-ratio: 800 / 560;
+  aspect-ratio: 1600 / 1120;
   background: #0d0818;
   border-radius: 12px;
   border: 2px solid #4a2a60;

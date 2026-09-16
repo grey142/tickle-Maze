@@ -170,23 +170,21 @@ window.MazeGen = (function () {
     if (layout.hubOctagon) {
       const hub = roomByName(rooms, layout.hubName || "hub");
       if (hub) {
-        const corners = [
-          [hub.x, hub.y],
-          [hub.x + hub.w - 1, hub.y],
-          [hub.x, hub.y + hub.h - 1],
-          [hub.x + hub.w - 1, hub.y + hub.h - 1],
-          [hub.x + 1, hub.y],
-          [hub.x, hub.y + 1],
-          [hub.x + hub.w - 2, hub.y],
-          [hub.x + hub.w - 1, hub.y + 1],
-          [hub.x + 1, hub.y + hub.h - 1],
-          [hub.x, hub.y + hub.h - 2],
-          [hub.x + hub.w - 2, hub.y + hub.h - 1],
-          [hub.x + hub.w - 1, hub.y + hub.h - 2]
-        ];
-        for (const [cx, cy] of corners) {
-          if (cy > 0 && cx > 0 && cy < rows - 1 && cx < cols - 1) {
-            grid[cy][cx] = TILE.WALL;
+        // Cut depth scales with room size (~2 tiles at original, ~4 at 2×)
+        const cut = Math.max(2, Math.floor(Math.min(hub.w, hub.h) / 7));
+        for (let i = 0; i < cut; i++) {
+          for (let j = 0; j < cut - i; j++) {
+            const cells = [
+              [hub.x + i, hub.y + j],
+              [hub.x + hub.w - 1 - i, hub.y + j],
+              [hub.x + i, hub.y + hub.h - 1 - j],
+              [hub.x + hub.w - 1 - i, hub.y + hub.h - 1 - j]
+            ];
+            for (const [cx, cy] of cells) {
+              if (cy > 0 && cx > 0 && cy < rows - 1 && cx < cols - 1) {
+                grid[cy][cx] = TILE.WALL;
+              }
+            }
           }
         }
       }
@@ -203,7 +201,7 @@ window.MazeGen = (function () {
     // Light corner pillars in larger rooms (solid) — skip vestibule/gate
     for (const r of rooms) {
       if (r.name === "vestibule" || r.name === "gate") continue;
-      if (r.w < 7 || r.h < 6) continue;
+      if (r.w < 14 || r.h < 12) continue;
       const corners = [
         { x: r.x + 1, y: r.y + 1 },
         { x: r.x + r.w - 2, y: r.y + 1 },
@@ -574,11 +572,11 @@ window.MazeGen = (function () {
     const rooms = [];
     const roomTarget = 8 + Math.min(level * 2, 12);
     const maxAttempts = 280;
-    const gap = 2; // wall strip between rooms; doorways carve through
+    const gap = 3; // wall strip between larger rooms; doorways carve through
     const sizeBoost = Math.min(level - 1, 4);
     for (let attempt = 0; attempt < maxAttempts && rooms.length < roomTarget; attempt++) {
-      const w = 8 + Math.floor(rng() * 6) + Math.floor(sizeBoost / 2); // grows with level
-      const h = 7 + Math.floor(rng() * 5) + Math.floor(sizeBoost / 2);
+      const w = 16 + Math.floor(rng() * 12) + Math.floor(sizeBoost); // ~2× footprint; grows with level
+      const h = 14 + Math.floor(rng() * 10) + Math.floor(sizeBoost);
       const x = 2 + Math.floor(rng() * (cols - w - 4));
       const y = 2 + Math.floor(rng() * (rows - h - 4));
       let overlaps = false;
@@ -601,8 +599,8 @@ window.MazeGen = (function () {
 
     // Fill remaining room slots with slightly smaller rooms if packing was tight
     for (let attempt = 0; attempt < 200 && rooms.length < roomTarget; attempt++) {
-      const w = 6 + Math.floor(rng() * (5 + Math.floor(sizeBoost / 2)));
-      const h = 5 + Math.floor(rng() * (4 + Math.floor(sizeBoost / 2)));
+      const w = 12 + Math.floor(rng() * (10 + Math.floor(sizeBoost)));
+      const h = 10 + Math.floor(rng() * (8 + Math.floor(sizeBoost)));
       const x = 2 + Math.floor(rng() * (cols - w - 4));
       const y = 2 + Math.floor(rng() * (rows - h - 4));
       let overlaps = false;
@@ -625,9 +623,9 @@ window.MazeGen = (function () {
 
     if (rooms.length < 3) {
       const fallbacks = [
-        { x: 3, y: 3, w: 11, h: 9 },
-        { x: Math.floor(cols / 2) - 5, y: Math.floor(rows / 2) - 4, w: 12, h: 10 },
-        { x: cols - 15, y: rows - 13, w: 11, h: 9 }
+        { x: 3, y: 3, w: 22, h: 18 },
+        { x: Math.floor(cols / 2) - 10, y: Math.floor(rows / 2) - 8, w: 24, h: 20 },
+        { x: cols - 28, y: rows - 24, w: 22, h: 18 }
       ];
       for (const r of fallbacks) {
         if (r.x + r.w >= cols - 1 || r.y + r.h >= rows - 1) continue;
