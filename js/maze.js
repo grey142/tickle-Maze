@@ -1,6 +1,7 @@
 /**
- * Underground mansion generator — large rooms linked by halls/doorways.
- * Seeded RNG so restart keeps the same layout.
+ * Underground mansion generator — open rectangular rooms linked by
+ * doorways / short halls. Room interiors are clear walkable floor
+ * (no internal maze walls). Seeded RNG so restart keeps the same layout.
  */
 window.MazeGen = (function () {
   function mulberry32(a) {
@@ -37,15 +38,87 @@ window.MazeGen = (function () {
     return { x: Math.floor(r.x + r.w / 2), y: Math.floor(r.y + r.h / 2) };
   }
 
-  function carveHall(grid, x1, y1, x2, y2, rng) {
-    // L-shaped hallway (1–2 tiles wide for mansion feel)
-    const wide = rng() < 0.45;
-    function carveAt(x, y) {
+  function inRoom(r, x, y) {
+    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+  }
+
+  /** Short doorway / connecting hall between two room edges (not a long maze corridor). */
+  function carveConnection(grid, a, b, rng) {
+    const ac = roomCenter(a);
+    const bc = roomCenter(b);
+    const ax0 = a.x,
+      ax1 = a.x + a.w - 1,
+      ay0 = a.y,
+      ay1 = a.y + a.h - 1;
+    const bx0 = b.x,
+      bx1 = b.x + b.w - 1,
+      by0 = b.y,
+      by1 = b.y + b.h - 1;
+
+    function carveCell(x, y) {
       if (y <= 0 || x <= 0 || y >= grid.length - 1 || x >= grid[0].length - 1) return;
       grid[y][x] = TILE.FLOOR;
+    }
+
+    function carveWide(x, y, horizontal) {
+      carveCell(x, y);
+      if (horizontal) {
+        if (y + 1 < grid.length - 1) carveCell(x, y + 1);
+      } else {
+        if (x + 1 < grid[0].length - 1) carveCell(x + 1, y);
+      }
+    }
+
+    // Prefer axis-aligned short links when rooms share an overlap band
+    const yOverlap0 = Math.max(ay0 + 1, by0 + 1);
+    const yOverlap1 = Math.min(ay1 - 1, by1 - 1);
+    const xOverlap0 = Math.max(ax0 + 1, bx0 + 1);
+    const xOverlap1 = Math.min(ax1 - 1, bx1 - 1);
+
+    if (yOverlap0 <= yOverlap1 && (ax1 < bx0 - 1 || bx1 < ax0 - 1)) {
+      // Side-by-side — horizontal doorway
+      const y = yOverlap0 + Math.floor(rng() * (yOverlap1 - yOverlap0 + 1));
+      const left = ax1 < bx0 ? ax1 : bx1;
+      const right = ax1 < bx0 ? bx0 : ax0;
+      for (let x = left; x <= right; x++) carveWide(x, y, true);
+      return;
+    }
+
+    if (xOverlap0 <= xOverlap1 && (ay1 < by0 - 1 || by1 < ay0 - 1)) {
+      // Stacked — vertical doorway
+      const x = xOverlap0 + Math.floor(rng() * (xOverlap1 - xOverlap0 + 1));
+      const top = ay1 < by0 ? ay1 : by1;
+      const bot = ay1 < by0 ? by0 : ay0;
+      for (let y = top; y <= bot; y++) carveWide(x, y, false);
+      return;
+    }
+
+    // Diagonal / no overlap: short L between nearest edge points (still short halls)
+    let x1 = ac.x,
+      y1 = ac.y,
+      x2 = bc.x,
+      y2 = bc.y;
+    if (ac.x < bc.x) {
+      x1 = ax1;
+      x2 = bx0;
+    } else if (ac.x > bc.x) {
+      x1 = ax0;
+      x2 = bx1;
+    }
+    if (ac.y < bc.y) {
+      y1 = ay1;
+      y2 = by0;
+    } else if (ac.y > bc.y) {
+      y1 = ay0;
+      y2 = by1;
+    }
+
+    const wide = true;
+    function carveAt(x, y) {
+      carveCell(x, y);
       if (wide) {
-        if (y + 1 < grid.length - 1) grid[y + 1][x] = TILE.FLOOR;
-        if (x + 1 < grid[0].length - 1) grid[y][x + 1] = TILE.FLOOR;
+        if (y + 1 < grid.length - 1) carveCell(x, y + 1);
+        if (x + 1 < grid[0].length - 1) carveCell(x + 1, y);
       }
     }
     if (rng() < 0.5) {
@@ -69,23 +142,23 @@ window.MazeGen = (function () {
     const rng = mulberry32(seed >>> 0);
     const grid = Array.from({ length: rows }, () => Array(cols).fill(TILE.WALL));
 
-    // Place spacious rooms
+    // Place spacious OPEN rooms with a gap so walls separate them
     const rooms = [];
-    const roomTarget = 9 + Math.min(level, 4);
-    const maxAttempts = 160;
+    const roomTarget = 8 + Math.min(level, 4);
+    const maxAttempts = 220;
+    const gap = 2; // wall strip between rooms; doorways carve through
     for (let attempt = 0; attempt < maxAttempts && rooms.length < roomTarget; attempt++) {
-      const w = 6 + Math.floor(rng() * 7); // 6–12
-      const h = 5 + Math.floor(rng() * 6); // 5–10
+      const w = 8 + Math.floor(rng() * 6); // 8–13
+      const h = 7 + Math.floor(rng() * 5); // 7–11
       const x = 2 + Math.floor(rng() * (cols - w - 4));
       const y = 2 + Math.floor(rng() * (rows - h - 4));
-      const pad = 0;
       let overlaps = false;
       for (const r of rooms) {
         if (
-          x - pad < r.x + r.w + pad &&
-          x + w + pad > r.x - pad &&
-          y - pad < r.y + r.h + pad &&
-          y + h + pad > r.y - pad
+          x < r.x + r.w + gap &&
+          x + w + gap > r.x &&
+          y < r.y + r.h + gap &&
+          y + h + gap > r.y
         ) {
           overlaps = true;
           break;
@@ -97,25 +170,39 @@ window.MazeGen = (function () {
       rooms.push(room);
     }
 
-    // Ensure at least a few rooms even on unlucky seeds
     if (rooms.length < 3) {
       const fallbacks = [
-        { x: 3, y: 3, w: 10, h: 8 },
-        { x: Math.floor(cols / 2) - 4, y: Math.floor(rows / 2) - 4, w: 11, h: 9 },
-        { x: cols - 14, y: rows - 12, w: 10, h: 8 }
+        { x: 3, y: 3, w: 11, h: 9 },
+        { x: Math.floor(cols / 2) - 5, y: Math.floor(rows / 2) - 4, w: 12, h: 10 },
+        { x: cols - 15, y: rows - 13, w: 11, h: 9 }
       ];
       for (const r of fallbacks) {
         if (r.x + r.w >= cols - 1 || r.y + r.h >= rows - 1) continue;
+        let overlaps = false;
+        for (const o of rooms) {
+          if (
+            r.x < o.x + o.w + gap &&
+            r.x + r.w + gap > o.x &&
+            r.y < o.y + o.h + gap &&
+            r.y + r.h + gap > o.y
+          ) {
+            overlaps = true;
+            break;
+          }
+        }
+        if (overlaps) continue;
         carveRect(grid, r.x, r.y, r.w, r.h);
         rooms.push(r);
       }
     }
 
-    // Connect rooms in MST-ish order (nearest-neighbor chain + a few extra loops)
+    // Connect rooms (nearest-neighbor MST) via short doorways / halls only
     const connected = [0];
     const remaining = rooms.map((_, i) => i).slice(1);
     while (remaining.length) {
-      let bestI = 0, bestJ = 0, bestD = Infinity;
+      let bestI = 0,
+        bestJ = 0,
+        bestD = Infinity;
       for (const i of connected) {
         const a = roomCenter(rooms[i]);
         for (let ri = 0; ri < remaining.length; ri++) {
@@ -130,23 +217,126 @@ window.MazeGen = (function () {
         }
       }
       const j = remaining.splice(bestJ, 1)[0];
-      const c1 = roomCenter(rooms[bestI]);
-      const c2 = roomCenter(rooms[j]);
-      carveHall(grid, c1.x, c1.y, c2.x, c2.y, rng);
+      carveConnection(grid, rooms[bestI], rooms[j], rng);
       connected.push(j);
     }
-    // Extra halls for loops
+    // A few extra loops between nearby rooms only
     const extra = 1 + Math.floor(level / 2);
     for (let i = 0; i < extra && rooms.length > 2; i++) {
-      const a = rooms[Math.floor(rng() * rooms.length)];
-      const b = rooms[Math.floor(rng() * rooms.length)];
-      if (a === b) continue;
-      const c1 = roomCenter(a);
-      const c2 = roomCenter(b);
-      carveHall(grid, c1.x, c1.y, c2.x, c2.y, rng);
+      let bestA = 0,
+        bestB = 1,
+        bestD = Infinity;
+      for (let a = 0; a < rooms.length; a++) {
+        for (let b = a + 1; b < rooms.length; b++) {
+          const ca = roomCenter(rooms[a]);
+          const cb = roomCenter(rooms[b]);
+          const d = Math.abs(ca.x - cb.x) + Math.abs(ca.y - cb.y);
+          if (d < bestD && d > 0) {
+            // prefer mid-distance pairs for loops
+            bestD = d;
+            bestA = a;
+            bestB = b;
+          }
+        }
+      }
+      // pick a random nearby pair instead of always the closest already connected
+      const a = Math.floor(rng() * rooms.length);
+      let b = Math.floor(rng() * rooms.length);
+      if (a === b) b = (b + 1) % rooms.length;
+      const ca = roomCenter(rooms[a]);
+      const cb = roomCenter(rooms[b]);
+      const d = Math.abs(ca.x - cb.x) + Math.abs(ca.y - cb.y);
+      if (d < 28) carveConnection(grid, rooms[a], rooms[b], rng);
+      else carveConnection(grid, rooms[bestA], rooms[bestB], rng);
     }
 
-    // Collect floors
+    // Corner pillars only (1-tile, edges) — do NOT fill rooms into a maze
+    const decorations = [];
+    for (const r of rooms) {
+      if (r.w < 6 || r.h < 6) continue;
+      const corners = [
+        { x: r.x + 1, y: r.y + 1 },
+        { x: r.x + r.w - 2, y: r.y + 1 },
+        { x: r.x + 1, y: r.y + r.h - 2 },
+        { x: r.x + r.w - 2, y: r.y + r.h - 2 }
+      ];
+      for (const c of corners) {
+        if (rng() < 0.55) {
+          // Pillars are solid wall tiles at corners only
+          if (grid[c.y][c.x] === TILE.FLOOR) {
+            grid[c.y][c.x] = TILE.WALL;
+            decorations.push({ type: "pillar", x: c.x, y: c.y });
+          }
+        }
+      }
+    }
+
+    // Walkable manor decorations (rugs, furniture silhouettes) — never block pathing
+    for (const r of rooms) {
+      // Rug near center
+      if (r.w >= 7 && r.h >= 6 && rng() < 0.75) {
+        const rw = 2 + Math.floor(rng() * Math.min(3, r.w - 4));
+        const rh = 2 + Math.floor(rng() * Math.min(2, r.h - 4));
+        const rx = r.x + 2 + Math.floor(rng() * Math.max(1, r.w - rw - 4));
+        const ry = r.y + 2 + Math.floor(rng() * Math.max(1, r.h - rh - 4));
+        decorations.push({ type: "rug", x: rx, y: ry, w: rw, h: rh });
+      }
+      // Furniture silhouettes along walls (visual only)
+      const furnCount = 1 + Math.floor(rng() * 3);
+      for (let fi = 0; fi < furnCount; fi++) {
+        const side = Math.floor(rng() * 4);
+        let fx, fy, fw, fh, facing;
+        if (side === 0) {
+          // top wall
+          fw = 1 + Math.floor(rng() * 2);
+          fh = 1;
+          fx = r.x + 2 + Math.floor(rng() * Math.max(1, r.w - fw - 4));
+          fy = r.y;
+          facing = "s";
+        } else if (side === 1) {
+          fw = 1 + Math.floor(rng() * 2);
+          fh = 1;
+          fx = r.x + 2 + Math.floor(rng() * Math.max(1, r.w - fw - 4));
+          fy = r.y + r.h - 1;
+          facing = "n";
+        } else if (side === 2) {
+          fw = 1;
+          fh = 1 + Math.floor(rng() * 2);
+          fx = r.x;
+          fy = r.y + 2 + Math.floor(rng() * Math.max(1, r.h - fh - 4));
+          facing = "e";
+        } else {
+          fw = 1;
+          fh = 1 + Math.floor(rng() * 2);
+          fx = r.x + r.w - 1;
+          fy = r.y + 2 + Math.floor(rng() * Math.max(1, r.h - fh - 4));
+          facing = "w";
+        }
+        // Only place if those cells are still floor (not pillar)
+        let ok = true;
+        for (let yy = fy; yy < fy + fh && ok; yy++) {
+          for (let xx = fx; xx < fx + fw; xx++) {
+            if (yy < 0 || xx < 0 || yy >= rows || xx >= cols || grid[yy][xx] === TILE.WALL) {
+              ok = false;
+              break;
+            }
+          }
+        }
+        if (ok) {
+          decorations.push({
+            type: "furniture",
+            x: fx,
+            y: fy,
+            w: fw,
+            h: fh,
+            facing,
+            style: Math.floor(rng() * 3)
+          });
+        }
+      }
+    }
+
+    // Collect floors (walkable — excludes corner pillars)
     const floors = [];
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
@@ -163,7 +353,6 @@ window.MazeGen = (function () {
       if (!pool.length) return null;
       const i = Math.floor(rng() * pool.length);
       const picked = pool[i];
-      // Remove from floors
       for (let fi = floors.length - 1; fi >= 0; fi--) {
         if (floors[fi].x === picked.x && floors[fi].y === picked.y) {
           floors.splice(fi, 1);
@@ -173,15 +362,36 @@ window.MazeGen = (function () {
       return picked;
     }
 
-    // Start in first room center
+    function takeInRoom(room, avoidStart, minDist) {
+      const pool = [];
+      for (let i = floors.length - 1; i >= 0; i--) {
+        const c = floors[i];
+        if (!inRoom(room, c.x, c.y)) continue;
+        // Prefer open interior (not right on the boundary wall edge)
+        if (c.x <= room.x || c.x >= room.x + room.w - 1) continue;
+        if (c.y <= room.y || c.y >= room.y + room.h - 1) continue;
+        const d = Math.abs(c.x - avoidStart.x) + Math.abs(c.y - avoidStart.y);
+        if (d < minDist) continue;
+        pool.push({ c, i });
+      }
+      if (!pool.length) return null;
+      const pick = pool[Math.floor(rng() * pool.length)];
+      floors.splice(pick.i, 1);
+      return pick.c;
+    }
+
     const startRoom = rooms[0];
     const start = roomCenter(startRoom);
-    grid[start.y][start.x] = TILE.FLOOR;
+    // Ensure start cell is floor (in case a pillar landed there — unlikely at center)
+    if (grid[start.y][start.x] === TILE.WALL) {
+      grid[start.y][start.x] = TILE.FLOOR;
+      floors.push({ x: start.x, y: start.y });
+    }
     for (let i = floors.length - 1; i >= 0; i--) {
       if (floors[i].x === start.x && floors[i].y === start.y) floors.splice(i, 1);
     }
 
-    // Exit in farthest room
+    // Exit in farthest room center area
     let exitRoom = rooms[rooms.length - 1];
     let bestFar = -1;
     for (const r of rooms) {
@@ -192,54 +402,45 @@ window.MazeGen = (function () {
         exitRoom = r;
       }
     }
-    const exit = roomCenter(exitRoom);
-    // Prefer a floor near exit room center that is still in floors list
-    let exitCell = takeFarFrom(start.x, start.y, Math.floor((cols + rows) / 4));
-    if (!exitCell) exitCell = { x: exit.x, y: exit.y };
-    // Bias toward exit room if possible
-    const exitRoomFloors = floors.filter(
-      (c) =>
-        c.x >= exitRoom.x &&
-        c.x < exitRoom.x + exitRoom.w &&
-        c.y >= exitRoom.y &&
-        c.y < exitRoom.y + exitRoom.h
-    );
-    if (exitRoomFloors.length) {
-      // put exitCell back conceptually — pick from exit room
-      const pick = exitRoomFloors[Math.floor(rng() * exitRoomFloors.length)];
-      for (let i = floors.length - 1; i >= 0; i--) {
-        if (floors[i].x === pick.x && floors[i].y === pick.y) floors.splice(i, 1);
-      }
-      // restore previous exitCell to floors if different
-      if (exitCell && (exitCell.x !== pick.x || exitCell.y !== pick.y)) {
-        floors.push(exitCell);
-      }
-      exitCell = pick;
-    }
+    let exitCell = takeInRoom(exitRoom, start, 4);
+    if (!exitCell) exitCell = takeFarFrom(start.x, start.y, Math.floor((cols + rows) / 4));
+    if (!exitCell) exitCell = { x: roomCenter(exitRoom).x, y: roomCenter(exitRoom).y };
     grid[exitCell.y][exitCell.x] = TILE.EXIT;
 
-    // Subtle traps — prefer room interiors away from start
-    const trapCount = 4 + level;
+    // Sparse traps — only some rooms get one, laid on open floor (not halls)
     const traps = [];
-    for (let i = 0; i < trapCount && floors.length; i++) {
-      const t = takeFarFrom(start.x, start.y, 6);
-      if (!t) break;
+    const trapRoomChance = 0.4 + level * 0.05;
+    for (let ri = 0; ri < rooms.length; ri++) {
+      const r = rooms[ri];
+      if (r === startRoom) continue;
+      if (rng() > trapRoomChance) continue;
+      const t = takeInRoom(r, start, 5);
+      if (!t) continue;
       if (t.x === exitCell.x && t.y === exitCell.y) continue;
       grid[t.y][t.x] = TILE.TRAP;
       traps.push(t);
     }
 
     let potion = null;
-    if (floors.length) {
-      potion = takeFarFrom(start.x, start.y, 8);
-      if (potion) grid[potion.y][potion.x] = TILE.POTION;
+    // Potion in a non-start room interior
+    const potionRooms = rooms.filter((r) => r !== startRoom);
+    if (potionRooms.length) {
+      const pr = potionRooms[Math.floor(rng() * potionRooms.length)];
+      potion = takeInRoom(pr, start, 6);
     }
+    if (!potion) potion = takeFarFrom(start.x, start.y, 8);
+    if (potion) grid[potion.y][potion.x] = TILE.POTION;
 
     const clothTiles = [TILE.CLOTH_SHIRT, TILE.CLOTH_SHOES, TILE.CLOTH_PANTS];
     const clothPickups = [];
     for (const ct of clothTiles) {
-      if (!floors.length) break;
-      const c = takeFarFrom(start.x, start.y, 6);
+      const nonStart = rooms.filter((r) => r !== startRoom);
+      let c = null;
+      if (nonStart.length) {
+        const pr = nonStart[Math.floor(rng() * nonStart.length)];
+        c = takeInRoom(pr, start, 5);
+      }
+      if (!c) c = takeFarFrom(start.x, start.y, 6);
       if (!c) break;
       grid[c.y][c.x] = ct;
       clothPickups.push({ x: c.x, y: c.y, tile: ct });
@@ -248,12 +449,18 @@ window.MazeGen = (function () {
     const enemySpawns = [];
     const minionCount = 2 + Math.min(level, 3);
     for (let i = 0; i < minionCount + 1; i++) {
-      const e = takeFarFrom(start.x, start.y, 10);
+      const nonStart = rooms.filter((r) => r !== startRoom);
+      let e = null;
+      if (nonStart.length) {
+        const pr = nonStart[Math.floor(rng() * nonStart.length)];
+        e = takeInRoom(pr, start, 8);
+      }
+      if (!e) e = takeFarFrom(start.x, start.y, 10);
       if (!e) break;
       enemySpawns.push(e);
     }
 
-    // Wall sconces / torches near walls inside rooms & halls
+    // Wall sconces along room boundary walls (and short halls)
     const torches = [];
     const torchTarget = 10 + level * 2;
     const torchCandidates = [];
@@ -287,6 +494,7 @@ window.MazeGen = (function () {
       }
       if (!ok) continue;
       torches.push({ x: c.x, y: c.y });
+      decorations.push({ type: "sconce", x: c.x, y: c.y });
     }
 
     return {
@@ -300,6 +508,7 @@ window.MazeGen = (function () {
       clothPickups,
       enemySpawns,
       torches,
+      decorations,
       rooms,
       seed,
       TILE
@@ -321,12 +530,16 @@ window.MazeGen = (function () {
       for (let y = 0; y < maze.rows; y++) {
         for (let x = 0; x < maze.cols; x++) {
           if (maze.grid[y][x] === TILE.WALL) continue;
-          const cx = x + 0.5, cy = y + 0.5;
+          const cx = x + 0.5,
+            cy = y + 0.5;
           const dPlayer = Math.hypot(cx - px, cy - py);
           if (dPlayer < pMin) continue;
           let ok = true;
           for (const a of avoid) {
-            if (Math.hypot(cx - a.x, cy - a.y) < eMin) { ok = false; break; }
+            if (Math.hypot(cx - a.x, cy - a.y) < eMin) {
+              ok = false;
+              break;
+            }
           }
           if (!ok) continue;
           floors.push({ x, y, d: dPlayer });

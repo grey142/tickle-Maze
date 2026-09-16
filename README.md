@@ -4,7 +4,7 @@
 
 Repo: https://github.com/grey142/tickle-Maze
 
-A playful browser maze game set in a spacious underground mansion. Explore large torch-lit rooms while a teasing succubus and her tickly minions try to catch you. Resist tickle cinematics, manage clothing & sensitivity, sprint through halls, and reach the EXIT.
+A playful browser game set in a spacious underground mansion. Explore large open torch-lit rooms (floor, decorations, and sparse traps — not mazes inside rooms) linked by doorways and short halls while a teasing succubus and her tickly minions try to catch you. Resist tickle cinematics, manage clothing & sensitivity, sprint between rooms, and reach the EXIT.
 
 Adult-flavored teasing fantasy tone — not graphic.
 
@@ -42,7 +42,7 @@ You can also open `index.html` directly (File → Open) — no ES modules are re
 
 - `index.html` — shell + UI overlays
 - `css/style.css` — manor / magenta theme
-- `js/maze.js` — seeded underground-mansion generator (large rooms + halls)
+- `js/maze.js` — seeded underground-mansion generator (open rooms + doorways/short halls, decorations)
 - `js/scenes.js` — feet / belly / tied cinematic pools
 - `js/game.js` — gameplay, camera, sprint, enemies, QTE, HUD
 

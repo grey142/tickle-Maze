@@ -1110,6 +1110,55 @@
     const px = (player.x - camera.x) * CELL;
     const py = (player.y - camera.y) * CELL;
 
+    // Manor decorations (rugs / furniture) — walkable, drawn on open floor
+    if (maze.decorations) {
+      for (const d of maze.decorations) {
+        if (d.type === "rug") {
+          const sx = (d.x - camera.x) * CELL;
+          const sy = (d.y - camera.y) * CELL;
+          const rw = d.w * CELL;
+          const rh = d.h * CELL;
+          if (sx + rw < -4 || sy + rh < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
+            continue;
+          ctx.fillStyle = "rgba(90, 35, 55, 0.42)";
+          ctx.fillRect(sx + 2, sy + 2, rw - 4, rh - 4);
+          ctx.strokeStyle = "rgba(180, 90, 120, 0.35)";
+          ctx.lineWidth = 2;
+          ctx.strokeRect(sx + 3, sy + 3, rw - 6, rh - 6);
+          ctx.strokeStyle = "rgba(220, 160, 100, 0.2)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(sx + 6, sy + 6, rw - 12, rh - 12);
+        } else if (d.type === "furniture") {
+          const sx = (d.x - camera.x) * CELL;
+          const sy = (d.y - camera.y) * CELL;
+          const fw = d.w * CELL;
+          const fh = d.h * CELL;
+          if (sx + fw < -4 || sy + fh < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
+            continue;
+          // Soft silhouette against the wall — does not block (floor tile stays walkable)
+          ctx.fillStyle = "rgba(40, 28, 55, 0.7)";
+          ctx.fillRect(sx + 3, sy + 3, fw - 6, fh - 6);
+          ctx.fillStyle = "rgba(120, 80, 140, 0.25)";
+          if (d.style === 0) {
+            // cabinet / bookshelf
+            ctx.fillRect(sx + 5, sy + 5, fw - 10, fh - 10);
+            ctx.strokeStyle = "rgba(180, 140, 200, 0.3)";
+            ctx.strokeRect(sx + 5, sy + 5, fw - 10, fh - 10);
+          } else if (d.style === 1) {
+            // table / bench
+            ctx.fillRect(sx + 4, sy + fh / 2 - 3, fw - 8, 6);
+            ctx.fillRect(sx + 6, sy + 6, 3, fh - 10);
+            ctx.fillRect(sx + fw - 9, sy + 6, 3, fh - 10);
+          } else {
+            // urn / pedestal
+            ctx.beginPath();
+            ctx.ellipse(sx + fw / 2, sy + fh / 2, Math.min(fw, fh) * 0.28, Math.min(fw, fh) * 0.35, 0, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+      }
+    }
+
     if (maze.torches) {
       for (const t of maze.torches) {
         const sx = (t.x - camera.x) * CELL;
