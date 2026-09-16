@@ -1,5 +1,9 @@
 # Cave Tickle Maze
 
+**Play online:** https://grey142.github.io/tickle-Maze/
+
+Repo: https://github.com/grey142/tickle-Maze
+
 A playful browser maze game: explore glowing caves while a teasing succubus and her tickly minions try to catch you. Resist tickle cinematics, manage clothing & sensitivity, and reach the EXIT.
 
 Adult-flavored teasing fantasy tone — not graphic.
