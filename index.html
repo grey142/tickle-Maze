@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Cave Tickle Maze</title>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Title Screen -->
+    <div id="title-screen" class="screen active">
+      <div class="title-glow"></div>
+      <h1 class="game-title">Cave Tickle Maze</h1>
+      <p class="subtitle">Explore the glowing caves… if you dare to giggle.</p>
+      <p class="flavor">A playful succubus and her tickly minions haunt these tunnels.<br/>Keep your clothes. Resist the tickles. Find the exit.</p>
+      <button id="btn-start" class="btn primary">Enter the Cave</button>
+      <div class="title-hints">
+        <p><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> Move (flashlight follows facing) &nbsp;·&nbsp; <kbd>Space</kbd> Resist &nbsp;·&nbsp; <kbd>Esc</kbd>/<kbd>P</kbd> Pause</p>
+        <p style="margin-top:0.4rem;font-size:0.85em;">Beam monsters to scare them — watch your back!</p>
+      </div>
+      <button id="btn-mute-title" class="btn ghost small" type="button">🔊 Sound On</button>
+    </div>
+
+    <!-- Game Screen -->
+    <div id="game-screen" class="screen">
+      <div id="hud">
+        <div class="hud-left">
+          <div class="clothes" id="clothes-hud" title="Worn clothing">
+            <span class="cloth-slot" data-piece="shirt" id="cloth-shirt">👕 Shirt</span>
+            <span class="cloth-slot" data-piece="shoes" id="cloth-shoes">👟 Shoes</span>
+            <span class="cloth-slot" data-piece="pants" id="cloth-pants">👖 Pants</span>
+          </div>
+        </div>
+        <div class="hud-center">
+          <div class="meter-block">
+            <label>Ticklishness</label>
+            <div class="meter-bar"><div id="tickle-fill" class="fill tickle"></div></div>
+            <span id="tickle-pct">0%</span>
+          </div>
+          <div class="meter-block">
+            <label>Sensitivity</label>
+            <div class="meter-bar"><div id="sens-fill" class="fill sens"></div></div>
+            <span id="sens-pct">0%</span>
+          </div>
+        </div>
+        <div class="hud-right">
+          <span id="level-label">Level 1</span>
+          <button id="btn-mute" class="btn ghost tiny" type="button">🔊</button>
+          <button id="btn-pause" class="btn ghost tiny" type="button">⏸</button>
+        </div>
+      </div>
+      <canvas id="game-canvas" width="800" height="560"></canvas>
+      <div id="mobile-pad" class="mobile-pad" aria-hidden="true">
+        <button class="dpad" data-dir="up">▲</button>
+        <div class="dpad-mid">
+          <button class="dpad" data-dir="left">◀</button>
+          <button class="dpad" data-dir="down">▼</button>
+          <button class="dpad" data-dir="right">▶</button>
+        </div>
+      </div>
+      <div id="toast" class="toast hidden"></div>
+    </div>
+
+    <!-- Cinematic / Resist Overlay -->
+    <div id="cinematic" class="overlay hidden">
+      <div class="cine-frame">
+        <canvas id="cine-canvas" width="640" height="280"></canvas>
+        <h2 id="cine-title" class="cine-title">Caught!</h2>
+        <p id="cine-text" class="cine-text"></p>
+        <p id="cine-caption" class="cine-caption"></p>
+        <div class="resist-wrap">
+          <label>Resistance</label>
+          <div class="meter-bar tall"><div id="resist-fill" class="fill resist"></div></div>
+          <p class="resist-hint">Mash <kbd>Space</kbd> / tap rapidly to escape!</p>
+          <button id="btn-resist" class="btn primary resist-btn" type="button">TICKLE RESIST!</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pause Overlay -->
+    <div id="pause-overlay" class="overlay hidden">
+      <div class="panel">
+        <h2>Paused</h2>
+        <p>The caves wait… for now.</p>
+        <button id="btn-resume" class="btn primary">Resume</button>
+        <button id="btn-quit-title" class="btn ghost">Title Screen</button>
+      </div>
+    </div>
+
+    <!-- Win Overlay -->
+    <div id="win-overlay" class="overlay hidden">
+      <div class="panel win">
+        <h2>You Escaped!</h2>
+        <p id="win-flavor">Giggling all the way to freedom — the succubus blows a playful kiss as you dash through the exit.</p>
+        <button id="btn-next" class="btn primary">Next Level</button>
+        <button id="btn-replay-win" class="btn ghost">Replay Level</button>
+        <button id="btn-title-win" class="btn ghost">Title Screen</button>
+      </div>
+    </div>
+
+    <!-- Game Over Overlay -->
+    <div id="gameover-overlay" class="overlay hidden">
+      <div class="panel lose">
+        <h2>Game Over</h2>
+        <p id="go-reason">Too ticklish to go on…</p>
+        <button id="btn-restart" class="btn primary">Restart Level</button>
+        <button id="btn-title-go" class="btn ghost">Title Screen</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/scenes.js"></script>
+  <script src="js/maze.js"></script>
+  <script src="js/game.js"></script>
+</body>
+</html>
