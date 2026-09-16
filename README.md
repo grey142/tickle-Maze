@@ -4,7 +4,7 @@
 
 Repo: https://github.com/grey142/tickle-Maze
 
-A playful browser game set in a spacious underground mansion. Explore large open torch-lit rooms (floor, decorations, and sparse traps — not mazes inside rooms) linked by doorways and short halls while a teasing succubus and her tickly minions try to catch you. Resist tickle cinematics, manage clothing & sensitivity, sprint between rooms, and reach the EXIT.
+A playful browser game set in a spacious underground mansion. Explore large open torch-lit rooms (floor, decorations, and sparse traps — not mazes inside rooms) linked by doorways and short halls while a teasing succubus and her tickly minions try to catch you. Collect **keys** to unlock the **exit gate**, resist tickle cinematics, manage clothing & sensitivity, sprint between rooms, and advance deeper.
 
 Adult-flavored teasing fantasy tone — not graphic.
 
@@ -32,19 +32,20 @@ You can also open `index.html` directly (File → Open) — no ES modules are re
 - **After any tickle resolution:** Minions and the succubus vanish and respawn at spaced random floor tiles on the current level, back to aimless wander (chase cleared)
 - **Resist:** Mash Space / tap the big button during catch cinematics
 - **Pause:** Esc or P
-- **Goal:** Reach the teal **EXIT** tile
+- **Keys & locked gate:** Each level scatters **3–5 golden keys** in open rooms. You need **3 keys** (HUD: `Keys 2/3`) to unlock the exit. The exit shows as a **LOCKED** gate until you have enough keys; then it becomes **OPEN**. Reach the open gate to clear the level
+- **Level advance:** Next floor uses a **new seed/layout** with **more rooms/connections**, **more traps**, and **more minions** (succubus still present). **Clothing and sensitivity carry forward** as ongoing risk. **Keys reset** each level
 - **Clothing:** Start with Shirt, Shoes, Pants. Each worn piece reduces ticklishness by 15%. Failing a resist while still clothed strips all clothes but you keep playing; succeeding strips only the scene’s piece (or raises sensitivity if that piece is already gone)
 - **Sensitivity:** Separate meter that raises ticklishness difficulty. Find the teal **potion** to reduce it (−40%). **Sensitivity never causes game over**
 - **Game over:** **Only** if you fail a resist while wearing **no clothing**
-- **Restart:** Same mansion layout (same seed), clothes restored, sensitivity cleared, traps restored
+- **Restart (game over / replay):** Same mansion layout (same seed), **clothes restored**, **sensitivity cleared**, traps restored, **keys reset**. (Advancing to the next level keeps clothing/sensitivity.)
 
 ## Files
 
 - `index.html` — shell + UI overlays
 - `css/style.css` — manor / magenta theme
-- `js/maze.js` — seeded underground-mansion generator (open rooms + doorways/short halls, decorations)
+- `js/maze.js` — seeded underground-mansion generator (open rooms + doorways/short halls, keys, decorations)
 - `js/scenes.js` — feet / belly / tied cinematic pools
-- `js/game.js` — gameplay, camera, sprint, enemies, QTE, HUD
+- `js/game.js` — gameplay, camera, sprint, keys/gate, enemies, QTE, HUD
 
 ## Tech
 

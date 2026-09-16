@@ -21,8 +21,12 @@ window.MazeGen = (function () {
     POTION: 4,
     CLOTH_SHIRT: 5,
     CLOTH_SHOES: 6,
-    CLOTH_PANTS: 7
+    CLOTH_PANTS: 7,
+    KEY: 8
   };
+
+  /** Keys required to unlock the exit gate (fixed requirement). */
+  const KEYS_REQUIRED = 3;
 
   function carveRect(grid, x0, y0, w, h) {
     for (let y = y0; y < y0 + h; y++) {
@@ -143,13 +147,39 @@ window.MazeGen = (function () {
     const grid = Array.from({ length: rows }, () => Array(cols).fill(TILE.WALL));
 
     // Place spacious OPEN rooms with a gap so walls separate them
+    // Higher levels: more rooms, slightly larger footprints
     const rooms = [];
-    const roomTarget = 8 + Math.min(level, 4);
-    const maxAttempts = 220;
+    const roomTarget = 8 + Math.min(level * 2, 12);
+    const maxAttempts = 280;
     const gap = 2; // wall strip between rooms; doorways carve through
+    const sizeBoost = Math.min(level - 1, 4);
     for (let attempt = 0; attempt < maxAttempts && rooms.length < roomTarget; attempt++) {
-      const w = 8 + Math.floor(rng() * 6); // 8–13
-      const h = 7 + Math.floor(rng() * 5); // 7–11
+      const w = 8 + Math.floor(rng() * 6) + Math.floor(sizeBoost / 2); // grows with level
+      const h = 7 + Math.floor(rng() * 5) + Math.floor(sizeBoost / 2);
+      const x = 2 + Math.floor(rng() * (cols - w - 4));
+      const y = 2 + Math.floor(rng() * (rows - h - 4));
+      let overlaps = false;
+      for (const r of rooms) {
+        if (
+          x < r.x + r.w + gap &&
+          x + w + gap > r.x &&
+          y < r.y + r.h + gap &&
+          y + h + gap > r.y
+        ) {
+          overlaps = true;
+          break;
+        }
+      }
+      if (overlaps) continue;
+      const room = { x, y, w, h };
+      carveRect(grid, x, y, w, h);
+      rooms.push(room);
+    }
+
+    // Fill remaining room slots with slightly smaller rooms if packing was tight
+    for (let attempt = 0; attempt < 200 && rooms.length < roomTarget; attempt++) {
+      const w = 6 + Math.floor(rng() * (5 + Math.floor(sizeBoost / 2)));
+      const h = 5 + Math.floor(rng() * (4 + Math.floor(sizeBoost / 2)));
       const x = 2 + Math.floor(rng() * (cols - w - 4));
       const y = 2 + Math.floor(rng() * (rows - h - 4));
       let overlaps = false;
@@ -220,8 +250,8 @@ window.MazeGen = (function () {
       carveConnection(grid, rooms[bestI], rooms[j], rng);
       connected.push(j);
     }
-    // A few extra loops between nearby rooms only
-    const extra = 1 + Math.floor(level / 2);
+    // Extra loops between nearby rooms — more connections on deeper levels
+    const extra = 1 + level;
     for (let i = 0; i < extra && rooms.length > 2; i++) {
       let bestA = 0,
         bestB = 1,
@@ -407,18 +437,21 @@ window.MazeGen = (function () {
     if (!exitCell) exitCell = { x: roomCenter(exitRoom).x, y: roomCenter(exitRoom).y };
     grid[exitCell.y][exitCell.x] = TILE.EXIT;
 
-    // Sparse traps — only some rooms get one, laid on open floor (not halls)
+    // Traps on open room floors — denser on deeper levels (still not in halls)
     const traps = [];
-    const trapRoomChance = 0.4 + level * 0.05;
+    const trapRoomChance = Math.min(0.75, 0.38 + level * 0.06);
+    const trapsPerRoom = 1 + (level >= 4 ? 1 : 0);
     for (let ri = 0; ri < rooms.length; ri++) {
       const r = rooms[ri];
       if (r === startRoom) continue;
       if (rng() > trapRoomChance) continue;
-      const t = takeInRoom(r, start, 5);
-      if (!t) continue;
-      if (t.x === exitCell.x && t.y === exitCell.y) continue;
-      grid[t.y][t.x] = TILE.TRAP;
-      traps.push(t);
+      for (let ti = 0; ti < trapsPerRoom; ti++) {
+        const t = takeInRoom(r, start, 5);
+        if (!t) break;
+        if (t.x === exitCell.x && t.y === exitCell.y) continue;
+        grid[t.y][t.x] = TILE.TRAP;
+        traps.push(t);
+      }
     }
 
     let potion = null;
@@ -446,8 +479,27 @@ window.MazeGen = (function () {
       clothPickups.push({ x: c.x, y: c.y, tile: ct });
     }
 
+    // Manor keys — scatter 3–5 through open rooms (need KEYS_REQUIRED to open gate)
+    const keyCount = Math.min(5, KEYS_REQUIRED + Math.min(level - 1, 2));
+    const keyPickups = [];
+    for (let ki = 0; ki < keyCount; ki++) {
+      const nonStart = rooms.filter((r) => r !== startRoom && r !== exitRoom);
+      const poolRooms = nonStart.length ? nonStart : rooms.filter((r) => r !== startRoom);
+      let k = null;
+      if (poolRooms.length) {
+        const pr = poolRooms[Math.floor(rng() * poolRooms.length)];
+        k = takeInRoom(pr, start, 4);
+      }
+      if (!k) k = takeFarFrom(start.x, start.y, 6);
+      if (!k) break;
+      if (k.x === exitCell.x && k.y === exitCell.y) continue;
+      grid[k.y][k.x] = TILE.KEY;
+      keyPickups.push({ x: k.x, y: k.y });
+    }
+
     const enemySpawns = [];
-    const minionCount = 2 + Math.min(level, 3);
+    // 1 succubus + scaling minions (more on deeper levels)
+    const minionCount = 2 + level;
     for (let i = 0; i < minionCount + 1; i++) {
       const nonStart = rooms.filter((r) => r !== startRoom);
       let e = null;
@@ -506,6 +558,9 @@ window.MazeGen = (function () {
       traps,
       potion,
       clothPickups,
+      keyPickups,
+      keysRequired: KEYS_REQUIRED,
+      keysPlaced: keyPickups.length,
       enemySpawns,
       torches,
       decorations,
@@ -566,5 +621,5 @@ window.MazeGen = (function () {
     return top[Math.floor(Math.random() * top.length)];
   }
 
-  return { generate, TILE, mulberry32, randomFloorFar };
+  return { generate, TILE, KEYS_REQUIRED, mulberry32, randomFloorFar };
 })();

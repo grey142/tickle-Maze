@@ -12,8 +12,8 @@
     <div id="title-screen" class="screen active">
       <div class="title-glow"></div>
       <h1 class="game-title">Tickle Maze</h1>
-      <p class="subtitle">An underground mansion of giggles and glowing exits.</p>
-      <p class="flavor">A playful succubus and her tickly minions haunt these stone halls.<br/>Keep your clothes. Resist the tickles. Find the exit.</p>
+      <p class="subtitle">An underground mansion of giggles, keys, and locked gates.</p>
+      <p class="flavor">A playful succubus and her tickly minions haunt these stone halls.<br/>Collect keys to unlock the exit gate. Keep your clothes. Resist the tickles.</p>
       <button id="btn-start" class="btn primary">Enter the Mansion</button>
       <div class="title-hints">
         <p><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> Move &nbsp;·&nbsp; <kbd>Shift</kbd> Sprint &nbsp;·&nbsp; <kbd>Space</kbd> Resist &nbsp;·&nbsp; <kbd>Esc</kbd>/<kbd>P</kbd> Pause</p>
@@ -50,6 +50,7 @@
           </div>
         </div>
         <div class="hud-right">
+          <span id="keys-label" class="keys-label" title="Keys collected / required to unlock the exit">Keys 0/3</span>
           <span id="level-label">Level 1</span>
           <button id="btn-mute" class="btn ghost tiny" type="button">🔊</button>
           <button id="btn-pause" class="btn ghost tiny" type="button">⏸</button>
@@ -98,7 +99,7 @@
     <div id="win-overlay" class="overlay hidden">
       <div class="panel win">
         <h2>You Escaped!</h2>
-        <p id="win-flavor">Giggling all the way to freedom — the succubus blows a playful kiss as you dash through the exit.</p>
+        <p id="win-flavor">The locked gate swings open — giggling all the way through. The succubus blows a playful kiss as deeper halls await.</p>
         <button id="btn-next" class="btn primary">Next Level</button>
         <button id="btn-replay-win" class="btn ghost">Replay Level</button>
         <button id="btn-title-win" class="btn ghost">Title Screen</button>

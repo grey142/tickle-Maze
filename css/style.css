@@ -342,3 +342,22 @@ kbd {
   background: #0ea5e9;
   color: #041018;
 }
+
+
+/* Keys HUD */
+.keys-label {
+  font-size: 0.85rem;
+  color: #fbbf24;
+  margin-right: 8px;
+  padding: 3px 8px;
+  border-radius: 8px;
+  background: #1e1430;
+  border: 1px solid #a16207;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.keys-label.ready {
+  color: var(--ok);
+  border-color: var(--ok);
+  box-shadow: 0 0 10px rgba(94, 234, 212, 0.35);
+}

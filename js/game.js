@@ -54,6 +54,10 @@
   let levelSeed = 42;
   let maze = null;
   let player = null;
+  let keysCollected = 0;
+  let keysRequired = 3;
+  let gateUnlocked = false;
+  let lockedGateToastAt = 0;
   let enemies = [];
   let mode = "title";
   let invulnUntil = 0;
@@ -192,6 +196,11 @@
     $("stamina-fill").style.width = player.stamina + "%";
     $("stamina-pct").textContent = Math.round(player.stamina) + "%";
     $("level-label").textContent = "Level " + level;
+    const keysEl = $("keys-label");
+    if (keysEl) {
+      keysEl.textContent = "Keys " + keysCollected + "/" + keysRequired;
+      keysEl.classList.toggle("ready", keysCollected >= keysRequired);
+    }
   }
 
   function setMuteUI() {
@@ -200,15 +209,34 @@
   }
 
   // --- Level setup ---
-  function buildLevel(keepSeed) {
+  /**
+   * Build / rebuild a level.
+   * opts.keepSeed — reuse levelSeed (retry same layout)
+   * opts.carryRisk — keep clothing + sensitivity from previous level (level advance)
+   * Without carryRisk: full clothes + sensitivity 0 (fresh start / game-over restart)
+   */
+  function buildLevel(keepSeed, opts) {
+    opts = opts || {};
+    const carryRisk = !!opts.carryRisk;
+    const prevClothing = player && carryRisk ? { ...player.clothing } : null;
+    const prevSens = player && carryRisk ? player.sensitivity : 0;
+
     if (!keepSeed) levelSeed = (Date.now() ^ (level * 9973)) >>> 0;
-    maze = window.MazeGen.generate(COLS, ROWS, levelSeed + level * 10007, level);
+    // Deeper levels: slightly larger mansion footprint for more rooms/connections
+    const genCols = Math.min(64, COLS + (level - 1) * 3);
+    const genRows = Math.min(48, ROWS + (level - 1) * 2);
+    maze = window.MazeGen.generate(genCols, genRows, levelSeed + level * 10007, level);
+
+    keysRequired = maze.keysRequired || window.MazeGen.KEYS_REQUIRED || 3;
+    keysCollected = 0;
+    gateUnlocked = false;
+
     player = {
       x: maze.start.x + 0.5,
       y: maze.start.y + 0.5,
       speed: PLAYER_WALK,
-      clothing: defaultClothing(),
-      sensitivity: 0,
+      clothing: prevClothing || defaultClothing(),
+      sensitivity: carryRisk ? prevSens : 0,
       facing: 0,
       facingDx: 1,
       facingDy: 0,
@@ -261,7 +289,7 @@
     showOverlay("gameover-overlay", false);
     ensureAudio();
     beep(440, 0.08);
-    toast("Find the glowing EXIT in the underground mansion…", 2800);
+    toast("Find " + keysRequired + " keys to unlock the exit gate…", 3000);
   }
 
   function restartSameLevel() {
@@ -278,10 +306,18 @@
 
   function nextLevel() {
     level++;
-    buildLevel(false);
+    // New seed/layout; clothing & sensitivity carry forward as ongoing risk
+    buildLevel(false, { carryRisk: true });
     mode = "play";
     showOverlay("win-overlay", false);
-    toast("Deeper into the manor… Level " + level, 2200);
+    toast(
+      "Deeper into the manor… Level " +
+        level +
+        " — find " +
+        keysRequired +
+        " keys. Harder halls await!",
+      2800
+    );
   }
 
   // --- Collision / movement ---
@@ -664,7 +700,48 @@
     if (tx < 0 || ty < 0 || tx >= maze.cols || ty >= maze.rows) return;
     const t = maze.grid[ty][tx];
     if (t === TILE.EXIT) {
-      winLevel();
+      if (keysCollected >= keysRequired) {
+        if (!gateUnlocked) {
+          gateUnlocked = true;
+          toast("The gate unlocks with a heavy click!", 1800);
+          beep(880, 0.12, "triangle");
+        }
+        winLevel();
+      } else {
+        const now = performance.now();
+        if (now - lockedGateToastAt > 1800) {
+          lockedGateToastAt = now;
+          const need = keysRequired - keysCollected;
+          toast(
+            "Gate locked — need " +
+              need +
+              " more key" +
+              (need === 1 ? "" : "s") +
+              " (" +
+              keysCollected +
+              "/" +
+              keysRequired +
+              ")",
+            2000
+          );
+          beep(180, 0.08, "square");
+        }
+      }
+      return;
+    }
+    if (t === TILE.KEY) {
+      maze.grid[ty][tx] = TILE.FLOOR;
+      keysCollected++;
+      updateHUD();
+      spawnPickupFX(tx, ty, "#fbbf24");
+      beep(740, 0.1, "triangle");
+      if (keysCollected >= keysRequired) {
+        gateUnlocked = true;
+        toast("Keys " + keysCollected + "/" + keysRequired + " — the exit gate can open!", 2600);
+        beep(990, 0.15, "triangle");
+      } else {
+        toast("Key found! (" + keysCollected + "/" + keysRequired + ")", 2000);
+      }
       return;
     }
     if (t === TILE.TRAP && performance.now() >= invulnUntil) {
@@ -945,9 +1022,9 @@
   function winLevel() {
     mode = "win";
     $("win-flavor").textContent =
-      "You dash through the glowing exit, half-laughing. The succubus waves coyly from the dark — \"Next time, darling~\" Level " +
+      "With enough keys, the locked gate swings open. You dash through, half-laughing. The succubus waves coyly — \"Next time, darling~\" Level " +
       level +
-      " clear!";
+      " clear! Clothing and sensitivity carry into deeper halls…";
     showOverlay("win-overlay", true);
     beep(523, 0.1);
     setTimeout(() => beep(659, 0.1), 100);
@@ -1055,6 +1132,7 @@
           }
 
           if (t === TILE.EXIT) {
+            const unlocked = keysCollected >= keysRequired;
             const eg = ctx.createRadialGradient(
               sx + CELL / 2,
               sy + CELL / 2,
@@ -1063,14 +1141,69 @@
               sy + CELL / 2,
               CELL
             );
-            eg.addColorStop(0, `rgba(94,234,212,${0.7 * torchFlicker})`);
-            eg.addColorStop(1, "transparent");
-            ctx.fillStyle = eg;
-            ctx.fillRect(sx - 4, sy - 4, CELL + 8, CELL + 8);
-            ctx.fillStyle = "#5eead4";
-            ctx.font = "bold 11px sans-serif";
-            ctx.textAlign = "center";
-            ctx.fillText("EXIT", sx + CELL / 2, sy + CELL / 2 + 4);
+            if (unlocked) {
+              eg.addColorStop(0, `rgba(94,234,212,${0.75 * torchFlicker})`);
+              eg.addColorStop(1, "transparent");
+              ctx.fillStyle = eg;
+              ctx.fillRect(sx - 4, sy - 4, CELL + 8, CELL + 8);
+              // Open gate arch
+              ctx.strokeStyle = "#5eead4";
+              ctx.lineWidth = 2;
+              ctx.strokeRect(sx + 4, sy + 3, CELL - 8, CELL - 6);
+              ctx.fillStyle = "rgba(94,234,212,0.25)";
+              ctx.fillRect(sx + 6, sy + 5, CELL - 12, CELL - 10);
+              ctx.fillStyle = "#5eead4";
+              ctx.font = "bold 9px sans-serif";
+              ctx.textAlign = "center";
+              ctx.fillText("OPEN", sx + CELL / 2, sy + CELL / 2 + 3);
+            } else {
+              eg.addColorStop(0, `rgba(251,191,36,${0.45 * torchFlicker})`);
+              eg.addColorStop(1, "transparent");
+              ctx.fillStyle = eg;
+              ctx.fillRect(sx - 4, sy - 4, CELL + 8, CELL + 8);
+              // Locked iron gate
+              ctx.fillStyle = "#3a3048";
+              ctx.fillRect(sx + 3, sy + 2, CELL - 6, CELL - 4);
+              ctx.strokeStyle = "#fbbf24";
+              ctx.lineWidth = 1.5;
+              ctx.strokeRect(sx + 3, sy + 2, CELL - 6, CELL - 4);
+              // Bars
+              ctx.beginPath();
+              for (let bi = 1; bi <= 3; bi++) {
+                const bx = sx + 3 + ((CELL - 6) * bi) / 4;
+                ctx.moveTo(bx, sy + 3);
+                ctx.lineTo(bx, sy + CELL - 3);
+              }
+              ctx.stroke();
+              // Lock body
+              ctx.fillStyle = "#fbbf24";
+              ctx.fillRect(sx + CELL / 2 - 4, sy + CELL / 2 - 2, 8, 7);
+              ctx.beginPath();
+              ctx.arc(sx + CELL / 2, sy + CELL / 2 - 3, 3.5, Math.PI, 0);
+              ctx.stroke();
+              ctx.fillStyle = "#fde68a";
+              ctx.font = "bold 8px sans-serif";
+              ctx.textAlign = "center";
+              ctx.fillText("LOCKED", sx + CELL / 2, sy + CELL - 5);
+            }
+          } else if (t === TILE.KEY) {
+            const bounce = Math.sin(animTime * 5 + x + y) * 2;
+            ctx.fillStyle = `rgba(251,191,36,${0.35 + 0.2 * torchFlicker})`;
+            ctx.beginPath();
+            ctx.arc(sx + CELL / 2, sy + CELL / 2 + bounce, 10, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#fbbf24";
+            ctx.beginPath();
+            ctx.arc(sx + CELL / 2 - 2, sy + CELL / 2 - 3 + bounce, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#14101c";
+            ctx.beginPath();
+            ctx.arc(sx + CELL / 2 - 2, sy + CELL / 2 - 3 + bounce, 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = "#fbbf24";
+            ctx.fillRect(sx + CELL / 2 + 2, sy + CELL / 2 - 1 + bounce, 7, 3);
+            ctx.fillRect(sx + CELL / 2 + 6, sy + CELL / 2 + 2 + bounce, 3, 4);
+            ctx.fillRect(sx + CELL / 2 + 4, sy + CELL / 2 + 4 + bounce, 3, 2);
           } else if (t === TILE.TRAP) {
             // Hard to see — low-contrast floor seam
             ctx.strokeStyle = "rgba(80,50,70,0.45)";
