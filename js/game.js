@@ -33,7 +33,7 @@
   // Room-locked camera: soft follow inside current region
   const CAM_EDGE_FOLLOW = 0.55;
   const CAM_LERP = 8.5;
-  const CAM_ROOM_PAD = 0.35; // keep a little wall fringe; never peek next room
+  const CAM_ROOM_PAD = 0.5; // mid-wall (~50% into boundary wall) so doorways stay visible
   const CAM_ROOM_TRANSITION = 5.5;
 
   // Succubus sight
@@ -1131,14 +1131,16 @@
     return (reg.kind || "room") + ":" + reg.id;
   }
 
-  /** True if tile is inside the active region or a wall bordering it. */
+  /** True if tile is inside the active region, a bordering wall, or a doorway opening. */
   function tileVisibleInRegion(x, y, reg) {
     if (!reg) return true;
     if (y < 0 || x < 0 || y >= maze.rows || x >= maze.cols) return false;
     const here = maze.regionAt[y][x];
     if (here && here.id === reg.id && here.kind === reg.kind) return true;
-    // Only walls that actually touch this region (never neighboring room floors)
-    if (maze.grid[y][x] === TILE.WALL) {
+    // Walls + short doorway/corridor floors that touch this region (not neighbor rooms)
+    const isWall = maze.grid[y][x] === TILE.WALL;
+    const isDoorway = here && here.kind === "corridor";
+    if (isWall || isDoorway) {
       for (const [dx, dy] of [
         [1, 0],
         [-1, 0],
@@ -1162,7 +1164,7 @@
         y: Math.max(0, Math.min(Math.max(0, maze.rows - viewH), camY))
       };
     }
-    // Framing box: region inset slightly so adjacent rooms stay off-screen
+    // Framing box: allow ~mid-wall peek so doorway gaps show; keep next rooms off-screen
     const left = reg.x - CAM_ROOM_PAD;
     const top = reg.y - CAM_ROOM_PAD;
     const right = reg.x + reg.w + CAM_ROOM_PAD;
