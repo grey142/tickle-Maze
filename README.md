@@ -26,16 +26,17 @@ You can also open `index.html` directly (File → Open) — no ES modules are re
 - **Move:** WASD or arrow keys (on-screen D-pad on touch devices)
 - **Sprint:** Hold **Shift** (or the mobile **SPRINT** button). Drains the stamina bar; regenerates when you stop. Sprint is faster than the succubus chase; walking is slower than her chase
 - **Camera:** You only see a frame around yourself — the camera smoothly follows when you near ~¾ of the way toward the edge of the view
-- **Flashlight:** Always on — shines in the direction you last moved. Beaming **minions** makes them flee, vanish, and respawn elsewhere in the mansion. The **succubus is not afraid of light**
+- **Flashlight:** Always on — shines in the direction you last moved. Beaming **minions** makes them flee, vanish, and respawn elsewhere (spaced away from you and other creatures). The **succubus is not afraid of light**
 - **Succubus:** Wanders slowly and quietly. Heartbeats get louder as she approaches (main “she’s near” cue). If she has line of sight, she speeds up by 35% to chase; when she loses sight she returns to wandering
-- **Traps:** Subtle / hard to spot floor seams. Hitting one triggers a grab cinematic as usual. **If she is actively chasing with sight when you hit a trap**, you lose **all clothing instantly** (combo), then resist — fail while already stripped is game over
+- **Traps:** Subtle / hard to spot floor seams. Hitting one triggers a grab cinematic; that trap is gone for the rest of this run on the level (returns only when the level reloads). **If she is actively chasing with sight when you hit a trap**, you lose **all clothing instantly** (combo), then resist
+- **After any tickle resolution:** Minions and the succubus vanish and respawn at spaced random floor tiles on the current level, back to aimless wander (chase cleared)
 - **Resist:** Mash Space / tap the big button during catch cinematics
 - **Pause:** Esc or P
 - **Goal:** Reach the teal **EXIT** tile
-- **Clothing:** Start with Shirt, Shoes, Pants. Each worn piece reduces ticklishness by 15%. Losing a resist QTE strips all clothes; succeeding strips only the scene’s piece (or raises sensitivity if that piece is already gone)
-- **Sensitivity:** Separate meter. Fills toward game over at 100%. Find the teal **potion** to reduce it (−40%)
-- **Game over:** Fail a resist with no clothes left, or sensitivity hits 100%
-- **Restart:** Same mansion layout (same seed), clothes restored, sensitivity cleared
+- **Clothing:** Start with Shirt, Shoes, Pants. Each worn piece reduces ticklishness by 15%. Failing a resist while still clothed strips all clothes but you keep playing; succeeding strips only the scene’s piece (or raises sensitivity if that piece is already gone)
+- **Sensitivity:** Separate meter that raises ticklishness difficulty. Find the teal **potion** to reduce it (−40%). **Sensitivity never causes game over**
+- **Game over:** **Only** if you fail a resist while wearing **no clothing**
+- **Restart:** Same mansion layout (same seed), clothes restored, sensitivity cleared, traps restored
 
 ## Files
 

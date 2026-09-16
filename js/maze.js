@@ -306,17 +306,38 @@ window.MazeGen = (function () {
     };
   }
 
-  /** Pick a random floor tile far from (px,py); never on that tile. */
-  function randomFloorFar(maze, px, py, minDist) {
-    const floors = [];
-    for (let y = 0; y < maze.rows; y++) {
-      for (let x = 0; x < maze.cols; x++) {
-        if (maze.grid[y][x] === TILE.WALL) continue;
-        const d = Math.hypot(x + 0.5 - px, y + 0.5 - py);
-        if (d < (minDist || 8)) continue;
-        floors.push({ x, y, d });
+  /**
+   * Pick a random floor tile far from the player and from avoidPoints.
+   * avoidPoints are world positions {x, y} (centers). Retries with relaxed
+   * spacing if needed so respawns never bunch up.
+   */
+  function randomFloorFar(maze, px, py, minDist, avoidPoints, minPeerDist) {
+    const peerMin = minPeerDist == null ? 6 : minPeerDist;
+    const playerMin = minDist == null ? 10 : minDist;
+    const avoid = avoidPoints || [];
+
+    function collect(pMin, eMin) {
+      const floors = [];
+      for (let y = 0; y < maze.rows; y++) {
+        for (let x = 0; x < maze.cols; x++) {
+          if (maze.grid[y][x] === TILE.WALL) continue;
+          const cx = x + 0.5, cy = y + 0.5;
+          const dPlayer = Math.hypot(cx - px, cy - py);
+          if (dPlayer < pMin) continue;
+          let ok = true;
+          for (const a of avoid) {
+            if (Math.hypot(cx - a.x, cy - a.y) < eMin) { ok = false; break; }
+          }
+          if (!ok) continue;
+          floors.push({ x, y, d: dPlayer });
+        }
       }
+      return floors;
     }
+
+    let floors = collect(playerMin, peerMin);
+    if (!floors.length) floors = collect(Math.max(4, playerMin * 0.5), Math.max(3, peerMin * 0.5));
+    if (!floors.length) floors = collect(2, 2);
     if (!floors.length) {
       for (let y = 0; y < maze.rows; y++) {
         for (let x = 0; x < maze.cols; x++) {
@@ -327,9 +348,8 @@ window.MazeGen = (function () {
       }
     }
     if (!floors.length) return null;
-    // Prefer farther tiles
     floors.sort((a, b) => b.d - a.d);
-    const top = floors.slice(0, Math.max(8, Math.floor(floors.length * 0.35)));
+    const top = floors.slice(0, Math.max(8, Math.floor(floors.length * 0.4)));
     return top[Math.floor(Math.random() * top.length)];
   }
 

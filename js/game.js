@@ -433,23 +433,78 @@
     beep(320, 0.08, "triangle");
   }
 
-  function respawnMinion(e) {
-    const spot = window.MazeGen.randomFloorFar(maze, player.x, player.y, 12);
-    if (!spot) return;
-    e.x = spot.x + 0.5;
-    e.y = spot.y + 0.5;
+  const RESPAWN_PEER_DIST = 7;
+  const RESPAWN_PLAYER_DIST = 12;
+
+  /** World positions of other living enemies (optionally excluding one). */
+  function enemyAvoidList(exclude) {
+    const list = [];
+    for (const o of enemies) {
+      if (o === exclude) continue;
+      if (o.fleeing && o.despawnAt && performance.now() < o.despawnAt) continue;
+      list.push({ x: o.x, y: o.y });
+    }
+    return list;
+  }
+
+  function clearEnemyCombatState(e) {
     e.scared = false;
     e.fleeing = false;
     e.despawnAt = 0;
+    e.hasSight = false;
+    e.chasing = false;
     e.path = [];
-    e.pathTimer = 0.3;
-    floatTexts.push({
-      x: e.x,
-      y: e.y - 0.5,
-      text: "…",
-      life: 0.8,
-      vy: -0.3
-    });
+    e.pathTimer = 0.4 + Math.random() * 0.4;
+    e.speed = e.wanderSpeed;
+    e.wanderTarget = null;
+  }
+
+  /** Place one creature on a spaced floor tile; resumes aimless wander. */
+  function respawnCreature(e, showDots) {
+    const avoid = enemyAvoidList(e);
+    const spot = window.MazeGen.randomFloorFar(
+      maze,
+      player.x,
+      player.y,
+      RESPAWN_PLAYER_DIST,
+      avoid,
+      RESPAWN_PEER_DIST
+    );
+    if (!spot) return;
+    e.x = spot.x + 0.5;
+    e.y = spot.y + 0.5;
+    clearEnemyCombatState(e);
+    if (showDots !== false) {
+      floatTexts.push({
+        x: e.x,
+        y: e.y - 0.5,
+        text: "…",
+        life: 0.8,
+        vy: -0.3
+      });
+    }
+  }
+
+  function respawnMinion(e) {
+    respawnCreature(e, true);
+  }
+
+  /**
+   * After any completed tickle resolution: all minions + succubus vanish and
+   * respawn spaced apart on the current level, chase/LOS cleared (wander).
+   * Triggered traps stay gone until the level is reloaded.
+   */
+  function afterTickleResolve() {
+    // Respawn sequentially so each respects already-placed peers
+    const order = enemies.slice().sort((a, b) => (a.kind === "succubus" ? -1 : 1));
+    for (const e of order) {
+      respawnCreature(e, true);
+    }
+    if (succubusRef) {
+      succubusRef.hasSight = false;
+      succubusRef.chasing = false;
+      succubusRef.speed = succubusRef.wanderSpeed;
+    }
   }
 
   function updateEnemies(dt) {
@@ -666,13 +721,15 @@
 
   // --- Catch / cinematic / resist ---
   function triggerComboCatch() {
-    // Trap + succubus with sight → strip ALL instantly
-    if (clothingCount(player.clothing) === 0) {
-      gameOver("Trapped and caught bare — the mansion claims another ticklish explorer!");
-      return;
+    // Trap + succubus with sight → strip ALL instantly (stay alive; GO only on fail resist while nude)
+    const hadClothes = clothingCount(player.clothing) > 0;
+    if (hadClothes) {
+      player.clothing = { shirt: false, shoes: false, pants: false };
+      updateHUD();
+      toast("All clothing lost to the trap + succubus!", 2200);
+    } else {
+      toast("Trapped bare — resist or the giggles win!", 2200);
     }
-    player.clothing = { shirt: false, shoes: false, pants: false };
-    updateHUD();
 
     const pick = window.pickScene({ shirt: true, shoes: true, pants: true });
     const tick = computeTicklishnessPct();
@@ -711,7 +768,6 @@
     showOverlay("cinematic", true);
     drawCinematicArt(pick.type);
     beep(160, 0.28, "sawtooth");
-    toast("All clothing lost to the trap + succubus!", 2200);
   }
 
   function triggerCatch(source) {
@@ -845,54 +901,45 @@
 
     if (success) {
       if (wasCombo) {
-        // Already stripped; escape with invuln (no single-piece path)
+        // Already stripped at combo start; escape with invuln (no single-piece path)
         toast("You thrash free — bare, blushing, but still in the race!", 2600);
         invulnUntil = performance.now() + 2500;
         updateHUD();
         beep(700, 0.12, "triangle");
-        if (player.sensitivity >= 100) {
-          gameOver("Sensitivity maxed out — too ticklish to continue!");
-          return;
-        }
         mode = "play";
+        afterTickleResolve();
         return;
       }
       if (player.clothing[piece]) {
         player.clothing[piece] = false;
         toast("You wriggled free — but lost your " + names[piece] + "!", 2600);
       } else {
+        // Sensitivity raises ticklishness difficulty only — never game over
         player.sensitivity = Math.min(100, player.sensitivity + 3);
         toast("Already bare there… sensitivity rises! (+3%)", 2600);
       }
       invulnUntil = performance.now() + 2200;
       updateHUD();
       beep(700, 0.12, "triangle");
-
-      if (player.sensitivity >= 100) {
-        gameOver("Sensitivity maxed out — too ticklish to continue!");
-        return;
-      }
       mode = "play";
+      afterTickleResolve();
       return;
     }
 
-    // Fail resist
-    if (wasCombo) {
-      // Already nude from combo strip → harsh fail
+    // Fail resist — game over ONLY if already wearing no clothing
+    const woreNothing = clothingCount(player.clothing) === 0;
+    if (woreNothing) {
       gameOver("Caught with nothing left to lose… the giggles win!");
       return;
     }
-    const hadAny = clothingCount(player.clothing) > 0;
+    // Had clothes: strip all, stay alive
     player.clothing = { shirt: false, shoes: false, pants: false };
     updateHUD();
-    if (!hadAny) {
-      gameOver("Caught with nothing left to lose… the giggles win!");
-      return;
-    }
     toast("Failed to resist! All clothing lost in a ticklish flurry!", 2800);
     invulnUntil = performance.now() + 2500;
     beep(150, 0.3, "sawtooth");
     mode = "play";
+    afterTickleResolve();
   }
 
   function winLevel() {
