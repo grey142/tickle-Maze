@@ -27,7 +27,7 @@
   const FLASH_CONE_DEG = 60;
   const FLASH_HALF = (FLASH_CONE_DEG * Math.PI) / 180 / 2;
   const FLASH_COS = Math.cos(FLASH_HALF);
-  const AMBIENT_DARK = 0.72;
+  const AMBIENT_DARK = 0.7056; // ~2% brighter than 0.72
   const TORCH_RADIUS = 3.2;
 
   // Room-locked camera: soft follow inside current region
