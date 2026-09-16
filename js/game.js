@@ -281,10 +281,13 @@
     const prevLoss = carryRisk ? clothingLossStack.slice() : [];
 
     if (!keepSeed) levelSeed = (Date.now() ^ (level * 9973)) >>> 0;
-    // Deeper levels: slightly larger mansion footprint for more rooms/connections
-    const genCols = Math.min(128, COLS + (level - 1) * 6);
-    const genRows = Math.min(96, ROWS + (level - 1) * 4);
-    maze = window.MazeGen.generate(genCols, genRows, levelSeed + level * 10007, level);
+    // Map size / room count / dead-end rate come from MazeGen.levelParams(level)
+    const lp =
+      (window.MazeGen.levelParams && window.MazeGen.levelParams(level)) || {
+        cols: COLS,
+        rows: ROWS
+      };
+    maze = window.MazeGen.generate(lp.cols, lp.rows, levelSeed + level * 10007, level);
 
     keysRequired = maze.keysRequired || window.MazeGen.KEYS_REQUIRED || 3;
     keysCollected = 0;
@@ -446,7 +449,11 @@
     ];
     let found = false;
     let guard = 0;
-    while (q.length && guard++ < 4000) {
+    const guardMax = Math.max(
+      8000,
+      (maze.floors && maze.floors.length) || maze.cols * maze.rows
+    );
+    while (q.length && guard++ < guardMax) {
       const cur = q.shift();
       if (cur.x === goal.x && cur.y === goal.y) {
         found = true;
@@ -1295,37 +1302,74 @@
         const sy = (y - camera.y) * CELL;
         const t = maze.grid[y][x];
         if (t === TILE.WALL) {
-          // Manor stone blocks
-          ctx.fillStyle = "#1a1524";
-          ctx.fillRect(sx, sy, CELL, CELL);
-          ctx.fillStyle = "#2c2438";
-          ctx.fillRect(sx + 1 * PX, sy + 1 * PX, CELL - 2 * PX, CELL - 2 * PX);
-          // Brick mortar lines
-          ctx.strokeStyle = "rgba(10,8,16,0.55)";
+          // Faux-3D stone brick: top face + vertical thickness
+          const wallH = Math.floor(CELL * 0.28);
+          const topY = sy - wallH;
+          // Top face (lighter brick plate)
+          ctx.fillStyle = "#3d4558";
+          ctx.fillRect(sx, topY, CELL, CELL);
+          ctx.fillStyle = "#4a5368";
+          ctx.fillRect(sx + 1 * PX, topY + 1 * PX, CELL - 2 * PX, CELL - 2 * PX);
+          // Brick pattern on top
+          ctx.strokeStyle = "rgba(18, 16, 28, 0.55)";
           ctx.lineWidth = 1;
           ctx.beginPath();
-          ctx.moveTo(sx, sy + CELL / 2);
-          ctx.lineTo(sx + CELL, sy + CELL / 2);
+          ctx.moveTo(sx, topY + CELL / 2);
+          ctx.lineTo(sx + CELL, topY + CELL / 2);
           if ((x + Math.floor(y / 2)) % 2 === 0) {
-            ctx.moveTo(sx + CELL / 2, sy);
-            ctx.lineTo(sx + CELL / 2, sy + CELL / 2);
+            ctx.moveTo(sx + CELL / 2, topY);
+            ctx.lineTo(sx + CELL / 2, topY + CELL / 2);
           } else {
-            ctx.moveTo(sx + CELL / 2, sy + CELL / 2);
-            ctx.lineTo(sx + CELL / 2, sy + CELL);
+            ctx.moveTo(sx + CELL / 2, topY + CELL / 2);
+            ctx.lineTo(sx + CELL / 2, topY + CELL);
           }
           ctx.stroke();
+          // Moss / wear flecks
           if ((x * 3 + y * 7) % 11 === 0) {
-            ctx.fillStyle = "rgba(139,92,246,0.2)";
-            ctx.fillRect(sx + 4 * PX, sy + 4 * PX, 6 * PX, 4 * PX);
+            ctx.fillStyle = "rgba(90, 140, 100, 0.22)";
+            ctx.fillRect(sx + 4 * PX, topY + 4 * PX, 6 * PX, 4 * PX);
           }
+          // Vertical south face when open space below (readable 3D edge)
+          const below =
+            y + 1 >= maze.rows ? TILE.FLOOR : maze.grid[y + 1][x];
+          if (below !== TILE.WALL) {
+            ctx.fillStyle = "#1e2230";
+            ctx.fillRect(sx, sy + CELL - wallH, CELL, wallH);
+            ctx.fillStyle = "#2a3040";
+            ctx.fillRect(sx + 1 * PX, sy + CELL - wallH, CELL - 2 * PX, wallH);
+            // Horizontal mortar on face
+            ctx.strokeStyle = "rgba(8, 8, 14, 0.5)";
+            ctx.beginPath();
+            ctx.moveTo(sx, sy + CELL - wallH / 2);
+            ctx.lineTo(sx + CELL, sy + CELL - wallH / 2);
+            ctx.stroke();
+          }
+          // Fill the "footprint" under the raised top so room-lock void doesn't show through
+          ctx.fillStyle = "#151820";
+          ctx.fillRect(sx, sy, CELL, CELL);
         } else {
-          // Polished manor floor
-          ctx.fillStyle = "#14101c";
+          // Sand + cobblestone mix floor (underground tunnel)
+          const sandA = (x * 17 + y * 31) & 3;
+          ctx.fillStyle = sandA === 0 ? "#b8956a" : sandA === 1 ? "#c4a574" : sandA === 2 ? "#a6845c" : "#bc9a6e";
           ctx.fillRect(sx, sy, CELL, CELL);
-          ctx.fillStyle = "rgba(90,55,40,0.14)";
-          ctx.fillRect(sx, sy, CELL, CELL);
+          // Cobble patches
+          const cobble = ((x * 13) ^ (y * 29)) % 5;
+          if (cobble < 3) {
+            ctx.fillStyle = cobble === 0 ? "rgba(90, 85, 80, 0.45)" : "rgba(110, 100, 95, 0.35)";
+            const ox = ((x * 7) % 5) * PX;
+            const oy = ((y * 11) % 5) * PX;
+            ctx.beginPath();
+            ctx.roundRect
+              ? ctx.roundRect(sx + 4 * PX + ox, sy + 4 * PX + oy, CELL - 14 * PX, CELL - 14 * PX, 4 * PX)
+              : ctx.rect(sx + 4 * PX + ox, sy + 4 * PX + oy, CELL - 14 * PX, CELL - 14 * PX);
+            ctx.fill();
+            ctx.strokeStyle = "rgba(40, 35, 30, 0.25)";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+          }
+          // Fine grit
           if ((x + y) % 2 === 0) {
-            ctx.fillStyle = "rgba(255,255,255,0.015)";
+            ctx.fillStyle = "rgba(255, 240, 200, 0.06)";
             ctx.fillRect(sx, sy, CELL, CELL);
           }
 
@@ -1508,7 +1552,7 @@
           // Rod
           ctx.fillStyle = "rgba(200, 160, 80, 0.7)";
           ctx.fillRect(sx + 2 * PX, sy + 1 * PX, bw - 4 * PX, 3 * PX);
-        } else if (d.type === "cobweb") {
+        } else if (d.type === "cobweb" || d.type === "cobweb") {
           const sx = (d.x - camera.x) * CELL;
           const sy = (d.y - camera.y) * CELL;
           if (sx < -CELL || sy < -CELL || sx > canvas.width + CELL || sy > canvas.height + CELL)
@@ -1529,6 +1573,55 @@
           ctx.beginPath();
           ctx.arc(sx + 8 * PX, sy + 8 * PX, 3 * PX, 0, Math.PI * 2);
           ctx.fill();
+        } else if (d.type === "painting") {
+          const sx = (d.x - camera.x) * CELL;
+          const sy = (d.y - camera.y) * CELL;
+          const pw = (d.w || 1) * CELL;
+          const ph = (d.h || 1) * CELL;
+          if (sx + pw < -4 || sy + ph < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
+            continue;
+          ctx.fillStyle = "rgba(120, 80, 40, 0.9)";
+          ctx.fillRect(sx + 4 * PX, sy + 4 * PX, pw - 8 * PX, ph - 8 * PX);
+          ctx.fillStyle = "rgba(40, 28, 50, 0.85)";
+          ctx.fillRect(sx + 8 * PX, sy + 8 * PX, pw - 16 * PX, ph - 16 * PX);
+          const theme = d.theme || "tickle";
+          ctx.fillStyle =
+            theme === "feather"
+              ? "rgba(200, 220, 255, 0.7)"
+              : theme === "laugh"
+                ? "rgba(255, 200, 120, 0.7)"
+                : theme === "ribbon"
+                  ? "rgba(255, 120, 180, 0.7)"
+                  : "rgba(255, 180, 220, 0.7)";
+          ctx.beginPath();
+          ctx.ellipse(sx + pw / 2, sy + ph / 2, pw * 0.22, ph * 0.28, 0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.strokeStyle = "rgba(220, 180, 80, 0.55)";
+          ctx.lineWidth = 2 * PX;
+          ctx.strokeRect(sx + 5 * PX, sy + 5 * PX, pw - 10 * PX, ph - 10 * PX);
+        } else if (d.type === "entranceGate") {
+          const sx = (d.x - camera.x) * CELL;
+          const sy = (d.y - camera.y) * CELL;
+          const gw = (d.w || 4) * CELL;
+          const gh = (d.h || 2) * CELL;
+          if (sx + gw < -4 || sy + gh < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
+            continue;
+          ctx.fillStyle = "rgba(60, 50, 40, 0.75)";
+          ctx.fillRect(sx + 2 * PX, sy + 2 * PX, gw - 4 * PX, gh - 4 * PX);
+          ctx.strokeStyle = "rgba(200, 170, 100, 0.7)";
+          ctx.lineWidth = 3 * PX;
+          ctx.beginPath();
+          ctx.moveTo(sx + 6 * PX, sy + gh - 4 * PX);
+          ctx.lineTo(sx + 6 * PX, sy + gh * 0.45);
+          ctx.quadraticCurveTo(sx + gw / 2, sy + 2 * PX, sx + gw - 6 * PX, sy + gh * 0.45);
+          ctx.lineTo(sx + gw - 6 * PX, sy + gh - 4 * PX);
+          ctx.stroke();
+          ctx.fillStyle = "rgba(180, 220, 255, 0.2)";
+          ctx.fillRect(sx + 10 * PX, sy + gh * 0.4, gw - 20 * PX, gh * 0.45);
+          ctx.fillStyle = "#c4b896";
+          ctx.font = "bold " + Math.round(8 * PX) + "px sans-serif";
+          ctx.textAlign = "center";
+          ctx.fillText("ENTRANCE", sx + gw / 2, sy + gh - 6 * PX);
         } else if (d.type === "stairs") {
           const sx = (d.x - camera.x) * CELL;
           const sy = (d.y - camera.y) * CELL;

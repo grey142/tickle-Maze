@@ -1,10 +1,10 @@
-# Tickle Maze — Underground Mansion
+# Tickle Maze — Underground Tunnel Mansion
 
 **Play online:** https://grey142.github.io/tickle-Maze/
 
 Repo: https://github.com/grey142/tickle-Maze
 
-A playful browser game set in a spacious underground mansion. Explore large open torch-lit rooms (floor, decorations, and sparse traps — not mazes inside rooms) linked by doorways and short halls while a teasing succubus and her tickly minions try to catch you. Collect **keys** to unlock the **exit gate**, resist tickle cinematics, manage clothing & sensitivity, sprint between rooms, and advance deeper.
+A playful browser game set in a sprawling **underground tunnel mansion**. Explore large open rooms of sand and cobblestone linked only by **doorways cut in shared stone-brick walls** (no hallways) while a teasing succubus and her tickly minions try to catch you. Collect **keys** to unlock the **exit gate**, resist tickle cinematics, manage clothing & sensitivity, sprint between rooms, and advance deeper.
 
 Adult-flavored teasing fantasy tone — not graphic.
 
@@ -25,29 +25,53 @@ You can also open `index.html` directly (File → Open) — no ES modules are re
 
 - **Move:** WASD or arrow keys (on-screen D-pad on touch devices)
 - **Sprint:** Hold **Shift** (or the mobile **SPRINT** button). Drains the stamina bar; regenerates when you stop. Sprint is faster than the succubus chase; walking is slower than her chase
-- **Camera:** Close-up **room-locked** view — you only see the room (or short hall) you are in. The camera soft-follows inside that space and clamps near walls/doorways so neighboring rooms stay off-screen (void outside). Crossing a doorway slides the camera into the next room
-- **Flashlight:** Always on — shines in the direction you last moved. Beaming **minions** makes them flee, vanish, and respawn elsewhere (spaced away from you and other creatures). The **succubus is not afraid of light**
-- **Succubus:** Wanders slowly and quietly. Heartbeats get louder as she approaches (main “she’s near” cue). If she has line of sight, she speeds up by 35% to chase; when she loses sight she returns to wandering
-- **Traps:** Subtle / hard to spot floor seams. Hitting one triggers a grab cinematic; that trap is gone for the rest of this run on the level (returns only when the level reloads). **If she is actively chasing with sight when you hit a trap**, you lose **all clothing instantly** (combo), then resist
-- **After any tickle resolution:** Minions and the succubus vanish and respawn at spaced random floor tiles on the current level, back to aimless wander (chase cleared)
+- **Camera:** Close-up **room-locked** view — you only see the room you are in. The camera soft-follows inside that space and clamps near mid-walls/doorways so neighboring rooms stay off-screen. Crossing a doorway slides the camera into the next room
+- **Flashlight:** Always on — shines in the direction you last moved. Beaming **minions** makes them flee, vanish, and respawn elsewhere. The **succubus is not afraid of light**
+- **Succubus:** Wanders slowly and quietly. Heartbeats get louder as she approaches. If she has line of sight, she speeds up by 35% to chase
+- **Traps:** Sparse / usually none on early floors. Hitting one triggers a grab cinematic
 - **Resist:** Mash Space / tap the big button during catch cinematics
 - **Pause:** Esc or P
-- **Keys & locked gate:** Each level scatters **3–5 golden keys** in open rooms. You need **3 keys** (HUD: `Keys 2/3`) to unlock the exit. The exit shows as a **LOCKED** gate until you have enough keys; then it becomes **OPEN**. Reach the open gate to clear the level
-- **Level advance:** Level 1 uses a **handcrafted** mansion layout (from the art map). Deeper floors use a **new seed/layout** with **more rooms/connections**, **more traps**, and **more minions** (succubus still present). **Clothing and sensitivity carry forward** as ongoing risk. **Keys reset** each level
-- **Clothing:** Start with Shirt, Shoes, Pants. Each worn piece reduces ticklishness by **15%**. Losses are tracked in order; **clothing pickups restore the last-lost piece (LIFO)**. If you are already fully clothed, pickups do nothing and stay on the map. Failing a resist while still clothed strips all clothes but you keep playing; succeeding strips only the scene’s piece (or raises sensitivity if that piece is already gone)
-- **Sensitivity:** Separate meter that raises ticklishness difficulty. Find the teal **potion** to reduce it (−40%). **Sensitivity never causes game over**
-- **Game over:** **Only** if you fail a resist while wearing **no clothing**
-- **Restart (game over / replay):** Same mansion layout (same seed), **clothes restored**, **sensitivity cleared**, traps restored, **keys reset**. (Advancing to the next level keeps clothing/sensitivity.)
+- **Keys & locked gate:** Each level places **exactly 3 golden keys**, well spaced. You need **3 keys** (HUD: `Keys 2/3`) to unlock the exit. Reach the open gate at the **bottom** of the map to clear the level
+- **Level advance:** All 10 levels use the **same procedural rules** with growing size, more rooms, and more dead-ends. **Clothing and sensitivity carry forward**. **Keys reset** each level
+- **Clothing:** Start with Shirt, Shoes, Pants. Each worn piece reduces ticklishness by **15%**. **Game over** only if you fail a resist while wearing **no clothing**
+
+## Map design (authoritative)
+
+All levels are generated by `MazeGen.generate(cols, rows, seed, level)` (size is taken from `MazeGen.levelParams(level)`):
+
+| Level | Approx. map edge | Room count | Dead-end rate |
+|------:|-----------------:|----------:|--------------:|
+| 1 | ~165 tiles | base (~18) | 10% |
+| 5 | ~221 tiles | ~+5%/level | 18% |
+| 10 | ~290 tiles | largest | 28% |
+
+Rules:
+
+- **Square** maps; rooms clustered in the playable middle with solid-rock padding
+- **Open rectangular rooms** with very little inside — **no hallways**, **no shut doors**
+- Rooms connect **only** by open doorways cut in **shared walls**
+- Most rooms have 2+ doorways; ~10% dead-ends on L1, **+2% per level**, **+5% more rooms** per level
+- **Entrance gate at TOP** (player start); **locked exit gate at BOTTOM** — exactly one of each
+- **No clear straight shot** start→exit; **≥3 distinct routes** plus reconnecting loops
+- All rooms stay reachable from start (dead-ends included)
+- **Exactly 3 keys**, max-min spaced (not clustered); traps sparse/none
+- Side-only décor: tickling-themed **paintings**, bookshelves, cabinets — never blocking room centers
+- Pathfinding runs on the **floor graph only** (walls are never searched)
+
+### Aesthetic
+
+- Floors: **sand + cobblestone** mix
+- Walls: **stone brick** with faux-3D height (top face + vertical thickness)
+- Underground abandoned-tunnel vibe; doorways read as clear gaps in brick
+- Entrance: stairs/portal at top; exit: ornate locked/open gate at bottom
 
 ## Files
 
 - `index.html` — shell + UI overlays
 - `css/style.css` — manor / magenta theme
-- `maps/level-01.jpg` — handcrafted Level 1 reference art
-- `js/levels/level01.js` — Level 1 room/corridor layout matching the art map
-- `js/maze.js` — seeded underground-mansion generator (Level 1 handcrafted; Level 2+ procedural open rooms + doorways)
+- `js/maze.js` — seeded underground-tunnel generator (all levels)
 - `js/scenes.js` — feet / belly / tied cinematic pools
-- `js/game.js` — gameplay, room-locked camera, sprint, keys/gate, enemies, QTE, HUD
+- `js/game.js` — gameplay, room-locked camera, sprint, keys/gate, enemies, QTE, HUD, faux-3D render
 
 ## Tech
 

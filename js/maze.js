@@ -1,7 +1,12 @@
 /**
- * Underground mansion generator — open rectangular rooms linked by
- * doorways / short halls. Room interiors are clear walkable floor
- * (no internal maze walls). Seeded RNG so restart keeps the same layout.
+ * Underground tunnel mansion generator — large square maps of open
+ * rectangular rooms connected ONLY by doorways cut in shared walls.
+ * No hallways. Seeded RNG so restart keeps the same layout.
+ *
+ * Sizing (level 1..10):
+ *   map edge  ~165 → ~290 tiles (square)
+ *   rooms     base × 1.05^(level-1)
+ *   dead-ends 10% + 2% per level above 1
  */
 window.MazeGen = (function () {
   function mulberry32(a) {
@@ -25,13 +30,31 @@ window.MazeGen = (function () {
     KEY: 8
   };
 
-  /** Keys required to unlock the exit gate (fixed requirement). */
   const KEYS_REQUIRED = 3;
+  const BASE_ROOMS = 18;
+
+  function levelParams(level) {
+    const lv = Math.max(1, level | 0);
+    const t = Math.min(lv, 10);
+    let size = Math.round(165 + (t - 1) * (125 / 9));
+    if (lv > 10) size = Math.min(340, size + (lv - 10) * 8);
+    const roomCount = Math.max(
+      8,
+      Math.round(BASE_ROOMS * Math.pow(1.05, t - 1) + (lv > 10 ? (lv - 10) * 1.5 : 0))
+    );
+    const deadEndRate = Math.min(
+      0.4,
+      0.1 + 0.02 * (t - 1) + (lv > 10 ? 0.02 * Math.min(lv - 10, 5) : 0)
+    );
+    return { cols: size, rows: size, roomCount, deadEndRate, level: lv };
+  }
 
   function carveRect(grid, x0, y0, w, h) {
+    const rows = grid.length;
+    const cols = grid[0].length;
     for (let y = y0; y < y0 + h; y++) {
       for (let x = x0; x < x0 + w; x++) {
-        if (y > 0 && x > 0 && y < grid.length - 1 && x < grid[0].length - 1) {
+        if (y > 0 && x > 0 && y < rows - 1 && x < cols - 1) {
           grid[y][x] = TILE.FLOOR;
         }
       }
@@ -46,239 +69,717 @@ window.MazeGen = (function () {
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
   }
 
-  /** Short doorway / connecting hall between two room edges (not a long maze corridor). */
-  function carveConnection(grid, a, b, rng) {
-    const ac = roomCenter(a);
-    const bc = roomCenter(b);
-    const ax0 = a.x,
-      ax1 = a.x + a.w - 1,
-      ay0 = a.y,
-      ay1 = a.y + a.h - 1;
-    const bx0 = b.x,
-      bx1 = b.x + b.w - 1,
-      by0 = b.y,
-      by1 = b.y + b.h - 1;
+  /** BSP: leaves separated by 1-tile shared walls. */
+  function bspPartition(root, targetLeaves, rng) {
+    const minLeafW = 14;
+    const minLeafH = 12;
+    const leaves = [];
 
-    function carveCell(x, y) {
-      if (y <= 0 || x <= 0 || y >= grid.length - 1 || x >= grid[0].length - 1) return;
-      grid[y][x] = TILE.FLOOR;
-    }
+    function split(node, depth) {
+      const canW = node.w >= minLeafW * 2 + 1;
+      const canH = node.h >= minLeafH * 2 + 1;
+      const stop =
+        (!canW && !canH) ||
+        (leaves.length + 1 >= targetLeaves && depth > 1) ||
+        (depth > 2 && leaves.length >= targetLeaves * 0.85 && rng() < 0.2);
 
-    function carveWide(x, y, horizontal) {
-      carveCell(x, y);
-      if (horizontal) {
-        if (y + 1 < grid.length - 1) carveCell(x, y + 1);
+      if (stop) {
+        leaves.push(node);
+        return;
+      }
+      if (!canW && !canH) {
+        leaves.push(node);
+        return;
+      }
+
+      let horizontal;
+      if (canW && canH) {
+        horizontal = node.w > node.h * 1.15 ? false : node.h > node.w * 1.15 ? true : rng() < 0.5;
       } else {
-        if (x + 1 < grid[0].length - 1) carveCell(x + 1, y);
+        horizontal = !!canH && !canW;
+      }
+
+      if (!horizontal) {
+        const minSplit = node.x + minLeafW;
+        const maxSplit = node.x + node.w - minLeafW - 1;
+        if (minSplit > maxSplit) {
+          leaves.push(node);
+          return;
+        }
+        const splitX = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
+        split({ x: node.x, y: node.y, w: splitX - node.x, h: node.h }, depth + 1);
+        split(
+          { x: splitX + 1, y: node.y, w: node.x + node.w - splitX - 1, h: node.h },
+          depth + 1
+        );
+      } else {
+        const minSplit = node.y + minLeafH;
+        const maxSplit = node.y + node.h - minLeafH - 1;
+        if (minSplit > maxSplit) {
+          leaves.push(node);
+          return;
+        }
+        const splitY = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
+        split({ x: node.x, y: node.y, w: node.w, h: splitY - node.y }, depth + 1);
+        split(
+          { x: node.x, y: splitY + 1, w: node.w, h: node.y + node.h - splitY - 1 },
+          depth + 1
+        );
       }
     }
 
-    // Prefer axis-aligned short links when rooms share an overlap band
-    const yOverlap0 = Math.max(ay0 + 1, by0 + 1);
-    const yOverlap1 = Math.min(ay1 - 1, by1 - 1);
-    const xOverlap0 = Math.max(ax0 + 1, bx0 + 1);
-    const xOverlap1 = Math.min(ax1 - 1, bx1 - 1);
+    split(root, 0);
 
-    if (yOverlap0 <= yOverlap1 && (ax1 < bx0 - 1 || bx1 < ax0 - 1)) {
-      // Side-by-side — horizontal doorway
-      const y = yOverlap0 + Math.floor(rng() * (yOverlap1 - yOverlap0 + 1));
-      const left = ax1 < bx0 ? ax1 : bx1;
-      const right = ax1 < bx0 ? bx0 : ax0;
-      for (let x = left; x <= right; x++) carveWide(x, y, true);
-      return;
-    }
-
-    if (xOverlap0 <= xOverlap1 && (ay1 < by0 - 1 || by1 < ay0 - 1)) {
-      // Stacked — vertical doorway
-      const x = xOverlap0 + Math.floor(rng() * (xOverlap1 - xOverlap0 + 1));
-      const top = ay1 < by0 ? ay1 : by1;
-      const bot = ay1 < by0 ? by0 : ay0;
-      for (let y = top; y <= bot; y++) carveWide(x, y, false);
-      return;
-    }
-
-    // Diagonal / no overlap: short L between nearest edge points (still short halls)
-    let x1 = ac.x,
-      y1 = ac.y,
-      x2 = bc.x,
-      y2 = bc.y;
-    if (ac.x < bc.x) {
-      x1 = ax1;
-      x2 = bx0;
-    } else if (ac.x > bc.x) {
-      x1 = ax0;
-      x2 = bx1;
-    }
-    if (ac.y < bc.y) {
-      y1 = ay1;
-      y2 = by0;
-    } else if (ac.y > bc.y) {
-      y1 = ay0;
-      y2 = by1;
-    }
-
-    const wide = true;
-    function carveAt(x, y) {
-      carveCell(x, y);
-      if (wide) {
-        if (y + 1 < grid.length - 1) carveCell(x, y + 1);
-        if (x + 1 < grid[0].length - 1) carveCell(x + 1, y);
+    let guard = 0;
+    while (leaves.length < targetLeaves && guard++ < 100) {
+      leaves.sort((a, b) => b.w * b.h - a.w * a.h);
+      const node = leaves[0];
+      const canW = node.w >= minLeafW * 2 + 1;
+      const canH = node.h >= minLeafH * 2 + 1;
+      if (!canW && !canH) break;
+      leaves.shift();
+      const horizontal = canH && (!canW || node.h >= node.w);
+      if (!horizontal) {
+        const minSplit = node.x + minLeafW;
+        const maxSplit = node.x + node.w - minLeafW - 1;
+        if (minSplit > maxSplit) {
+          leaves.push(node);
+          break;
+        }
+        const splitX = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
+        leaves.push({ x: node.x, y: node.y, w: splitX - node.x, h: node.h });
+        leaves.push({
+          x: splitX + 1,
+          y: node.y,
+          w: node.x + node.w - splitX - 1,
+          h: node.h
+        });
+      } else {
+        const minSplit = node.y + minLeafH;
+        const maxSplit = node.y + node.h - minLeafH - 1;
+        if (minSplit > maxSplit) {
+          leaves.push(node);
+          break;
+        }
+        const splitY = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
+        leaves.push({ x: node.x, y: node.y, w: node.w, h: splitY - node.y });
+        leaves.push({
+          x: node.x,
+          y: splitY + 1,
+          w: node.w,
+          h: node.y + node.h - splitY - 1
+        });
       }
     }
-    if (rng() < 0.5) {
-      const xStep = x1 < x2 ? 1 : -1;
-      for (let x = x1; x !== x2; x += xStep) carveAt(x, y1);
-      carveAt(x2, y1);
-      const yStep = y1 < y2 ? 1 : -1;
-      for (let y = y1; y !== y2; y += yStep) carveAt(x2, y);
-      carveAt(x2, y2);
+    return leaves;
+  }
+
+  function sharedWall(a, b) {
+    if (a.x + a.w + 1 === b.x) {
+      const lo = Math.max(a.y, b.y) + 1;
+      const hi = Math.min(a.y + a.h, b.y + b.h) - 2;
+      if (hi - lo >= 1) return { dir: "v", wall: a.x + a.w, lo: lo, hi: hi };
+    }
+    if (b.x + b.w + 1 === a.x) {
+      const lo = Math.max(a.y, b.y) + 1;
+      const hi = Math.min(a.y + a.h, b.y + b.h) - 2;
+      if (hi - lo >= 1) return { dir: "v", wall: b.x + b.w, lo: lo, hi: hi };
+    }
+    if (a.y + a.h + 1 === b.y) {
+      const lo = Math.max(a.x, b.x) + 1;
+      const hi = Math.min(a.x + a.w, b.x + b.w) - 2;
+      if (hi - lo >= 1) return { dir: "h", wall: a.y + a.h, lo: lo, hi: hi };
+    }
+    if (b.y + b.h + 1 === a.y) {
+      const lo = Math.max(a.x, b.x) + 1;
+      const hi = Math.min(a.x + a.w, b.x + b.w) - 2;
+      if (hi - lo >= 1) return { dir: "h", wall: b.y + b.h, lo: lo, hi: hi };
+    }
+    return null;
+  }
+
+  function carveDoorway(grid, edge, rng) {
+    const width = 2 + (rng() < 0.35 ? 1 : 0);
+    const span = edge.hi - edge.lo + 1;
+    if (span < width) return null;
+    let start;
+    if (rng() < 0.55) {
+      start = edge.lo + Math.floor(rng() * (span - width + 1));
     } else {
-      const yStep = y1 < y2 ? 1 : -1;
-      for (let y = y1; y !== y2; y += yStep) carveAt(x1, y);
-      carveAt(x1, y2);
-      const xStep = x1 < x2 ? 1 : -1;
-      for (let x = x1; x !== x2; x += xStep) carveAt(x, y2);
-      carveAt(x2, y2);
+      start = rng() < 0.5 ? edge.lo : edge.hi - width + 1;
+      if (start < edge.lo) start = edge.lo;
+      if (start > edge.hi - width + 1) start = edge.hi - width + 1;
     }
+    const cells = [];
+    if (edge.dir === "v") {
+      const x = edge.wall;
+      for (let y = start; y < start + width; y++) {
+        if (y > 0 && y < grid.length - 1 && x > 0 && x < grid[0].length - 1) {
+          grid[y][x] = TILE.FLOOR;
+          cells.push({ x: x, y: y });
+        }
+      }
+    } else {
+      const y = edge.wall;
+      for (let x = start; x < start + width; x++) {
+        if (y > 0 && y < grid.length - 1 && x > 0 && x < grid[0].length - 1) {
+          grid[y][x] = TILE.FLOOR;
+          cells.push({ x: x, y: y });
+        }
+      }
+    }
+    return cells.length ? cells : null;
   }
 
-  function roomByName(rooms, name) {
-    return rooms.find((r) => r.name === name);
+  function buildAdjacency(rooms) {
+    const edges = [];
+    for (let i = 0; i < rooms.length; i++) {
+      for (let j = i + 1; j < rooms.length; j++) {
+        const w = sharedWall(rooms[i], rooms[j]);
+        if (w) edges.push({ i: i, j: j, wall: w });
+      }
+    }
+    return edges;
   }
 
-  /**
-   * Build mansion from a handcrafted layout (Level 1 art map).
-   * Same return shape as procedural generate().
-   */
-  function generateHandcrafted(layout, seed, level) {
-    const rng = mulberry32(seed >>> 0);
-    const cols = layout.cols;
-    const rows = layout.rows;
-    const grid = Array.from({ length: rows }, () => Array(cols).fill(TILE.WALL));
+  function ufMake(n) {
+    const p = Array.from({ length: n }, function (_, i) {
+      return i;
+    });
+    const r = Array(n).fill(0);
+    return {
+      find: function (x) {
+        while (p[x] !== x) {
+          p[x] = p[p[x]];
+          x = p[x];
+        }
+        return x;
+      },
+      union: function (a, b) {
+        a = this.find(a);
+        b = this.find(b);
+        if (a === b) return false;
+        if (r[a] < r[b]) p[a] = b;
+        else if (r[a] > r[b]) p[b] = a;
+        else {
+          p[b] = a;
+          r[a]++;
+        }
+        return true;
+      },
+      same: function (a, b) {
+        return this.find(a) === this.find(b);
+      }
+    };
+  }
 
-    const rooms = layout.rooms.map((r) => ({
-      x: r.x,
-      y: r.y,
-      w: r.w,
-      h: r.h,
-      name: r.name
-    }));
+  function degreeMap(selected, n) {
+    const deg = Array(n).fill(0);
+    for (let i = 0; i < selected.length; i++) {
+      deg[selected[i].i]++;
+      deg[selected[i].j]++;
+    }
+    return deg;
+  }
 
-    for (const r of rooms) carveRect(grid, r.x, r.y, r.w, r.h);
+  function countPathsToExit(n, selected, startIdx, exitIdx, need) {
+    const adj = Array.from({ length: n }, function () {
+      return [];
+    });
+    for (let ei = 0; ei < selected.length; ei++) {
+      const e = selected[ei];
+      adj[e.i].push({ to: e.j, ei: ei });
+      adj[e.j].push({ to: e.i, ei: ei });
+    }
+    let found = 0;
+    const blocked = new Uint8Array(selected.length);
+    for (let attempt = 0; attempt < need + 2; attempt++) {
+      const prev = Array(n).fill(-1);
+      const prevE = Array(n).fill(-1);
+      const q = [startIdx];
+      prev[startIdx] = startIdx;
+      let qi = 0;
+      let reached = false;
+      while (qi < q.length) {
+        const u = q[qi++];
+        if (u === exitIdx) {
+          reached = true;
+          break;
+        }
+        for (let k = 0; k < adj[u].length; k++) {
+          const edge = adj[u][k];
+          if (blocked[edge.ei]) continue;
+          if (prev[edge.to] !== -1) continue;
+          prev[edge.to] = u;
+          prevE[edge.to] = edge.ei;
+          q.push(edge.to);
+        }
+      }
+      if (!reached) break;
+      found++;
+      let cur = exitIdx;
+      while (cur !== startIdx) {
+        const ei = prevE[cur];
+        if (ei < 0) break;
+        blocked[ei] = 1;
+        cur = prev[cur];
+      }
+    }
+    return found;
+  }
 
-    // Soften central hub toward octagon (cut outer corners)
-    if (layout.hubOctagon) {
-      const hub = roomByName(rooms, layout.hubName || "hub");
-      if (hub) {
-        // Cut depth scales with room size (~2 tiles at original, ~4 at 2×)
-        const cut = Math.max(2, Math.floor(Math.min(hub.w, hub.h) / 7));
-        for (let i = 0; i < cut; i++) {
-          for (let j = 0; j < cut - i; j++) {
-            const cells = [
-              [hub.x + i, hub.y + j],
-              [hub.x + hub.w - 1 - i, hub.y + j],
-              [hub.x + i, hub.y + hub.h - 1 - j],
-              [hub.x + hub.w - 1 - i, hub.y + hub.h - 1 - j]
-            ];
-            for (const [cx, cy] of cells) {
-              if (cy > 0 && cx > 0 && cy < rows - 1 && cx < cols - 1) {
-                grid[cy][cx] = TILE.WALL;
-              }
-            }
+  function hasEdge(selected, i, j) {
+    for (let k = 0; k < selected.length; k++) {
+      const s = selected[k];
+      if ((s.i === i && s.j === j) || (s.i === j && s.j === i)) return true;
+    }
+    return false;
+  }
+
+  function selectDoorways(rooms, allEdges, startIdx, exitIdx, deadEndRate, rng) {
+    const n = rooms.length;
+    const targetDead = Math.max(1, Math.round(n * deadEndRate));
+    const edges = allEdges.slice();
+    for (let i = edges.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      const tmp = edges[i];
+      edges[i] = edges[j];
+      edges[j] = tmp;
+    }
+
+    function scoreEdge(e) {
+      let s = rng() * 0.5;
+      if (e.i === exitIdx || e.j === exitIdx) s += 2;
+      if (e.i === startIdx || e.j === startIdx) s += 0.8;
+      if (e.wall.dir === "v") s += 0.35;
+      return s;
+    }
+    edges.sort(function (a, b) {
+      return scoreEdge(b) - scoreEdge(a);
+    });
+
+    const selected = [];
+    const uf = ufMake(n);
+
+    const candidates = [];
+    for (let i = 0; i < n; i++) {
+      if (i === startIdx || i === exitIdx) continue;
+      const c = roomCenter(rooms[i]);
+      let maxX = 0,
+        maxY = 0;
+      for (let ri = 0; ri < rooms.length; ri++) {
+        maxX = Math.max(maxX, rooms[ri].x + rooms[ri].w);
+        maxY = Math.max(maxY, rooms[ri].y + rooms[ri].h);
+      }
+      const distEdge = Math.min(c.x, c.y, maxX - c.x, maxY - c.y);
+      candidates.push({ i: i, score: distEdge + rng() });
+    }
+    candidates.sort(function (a, b) {
+      return a.score - b.score;
+    });
+    const deadSet = {};
+    for (let i = 0; i < Math.min(targetDead, candidates.length); i++) {
+      deadSet[candidates[i].i] = true;
+    }
+
+    for (let ei = 0; ei < edges.length; ei++) {
+      const e = edges[ei];
+      if (deadSet[e.i] || deadSet[e.j]) continue;
+      if (uf.union(e.i, e.j)) selected.push(e);
+    }
+
+    const deadIds = Object.keys(deadSet).map(Number);
+    for (let di = 0; di < deadIds.length; di++) {
+      const d = deadIds[di];
+      const opts = edges.filter(function (e) {
+        return (e.i === d || e.j === d) && !hasEdge(selected, e.i, e.j);
+      });
+      opts.sort(function (a, b) {
+        const aOther = a.i === d ? a.j : a.i;
+        const bOther = b.i === d ? b.j : b.i;
+        const aOk = !deadSet[aOther] ? 1 : 0;
+        const bOk = !deadSet[bOther] ? 1 : 0;
+        return bOk - aOk || rng() - 0.5;
+      });
+      let attached = false;
+      for (let oi = 0; oi < opts.length; oi++) {
+        const e = opts[oi];
+        const other = e.i === d ? e.j : e.i;
+        if (deadSet[other] && opts.length > 1) continue;
+        if (uf.union(e.i, e.j)) {
+          selected.push(e);
+          attached = true;
+          break;
+        }
+      }
+      if (!attached && opts.length) {
+        selected.push(opts[0]);
+        uf.union(opts[0].i, opts[0].j);
+      }
+    }
+
+    for (let ei = 0; ei < edges.length; ei++) {
+      const e = edges[ei];
+      if (uf.same(e.i, e.j)) continue;
+      const deg = degreeMap(selected, n);
+      if (deadSet[e.i] && deg[e.i] >= 1) continue;
+      if (deadSet[e.j] && deg[e.j] >= 1) continue;
+      if (uf.union(e.i, e.j)) selected.push(e);
+    }
+
+    const exitEdges = edges.filter(function (e) {
+      return e.i === exitIdx || e.j === exitIdx;
+    });
+    for (let ei = 0; ei < exitEdges.length; ei++) {
+      const e = exitEdges[ei];
+      const deg = degreeMap(selected, n);
+      if (deg[exitIdx] >= 3) break;
+      const other = e.i === exitIdx ? e.j : e.i;
+      if (deadSet[other]) continue;
+      if (hasEdge(selected, e.i, e.j)) continue;
+      selected.push(e);
+    }
+
+    let loops = 0;
+    const loopTarget = Math.max(3, Math.floor(n * 0.35));
+    for (let ei = 0; ei < edges.length; ei++) {
+      if (loops >= loopTarget) break;
+      const e = edges[ei];
+      if (deadSet[e.i] || deadSet[e.j]) continue;
+      if (hasEdge(selected, e.i, e.j)) continue;
+      if (uf.same(e.i, e.j)) {
+        selected.push(e);
+        loops++;
+      }
+    }
+
+    // Ensure exit degree >= 3 when possible (helps alternate routes)
+    {
+      const exitOpts = edges.filter(function (e) {
+        return (e.i === exitIdx || e.j === exitIdx) && !hasEdge(selected, e.i, e.j);
+      });
+      for (let ei = 0; ei < exitOpts.length; ei++) {
+        const deg = degreeMap(selected, n);
+        if (deg[exitIdx] >= 4) break;
+        const e = exitOpts[ei];
+        const other = e.i === exitIdx ? e.j : e.i;
+        if (deadSet[other]) continue;
+        selected.push(e);
+      }
+    }
+
+    // Ensure start degree >= 2
+    {
+      const startOpts = edges.filter(function (e) {
+        return (e.i === startIdx || e.j === startIdx) && !hasEdge(selected, e.i, e.j);
+      });
+      for (let ei = 0; ei < startOpts.length; ei++) {
+        const deg = degreeMap(selected, n);
+        if (deg[startIdx] >= 3) break;
+        const e = startOpts[ei];
+        const other = e.i === startIdx ? e.j : e.i;
+        if (deadSet[other]) continue;
+        selected.push(e);
+      }
+    }
+
+    let paths = countPathsToExit(n, selected, startIdx, exitIdx, 3);
+    let boostGuard = 0;
+    while (paths < 3 && boostGuard++ < 80) {
+      let added = false;
+      // Prefer unused edges near the exit or that bridge high-degree nodes
+      const scored = [];
+      for (let ei = 0; ei < edges.length; ei++) {
+        const e = edges[ei];
+        if (deadSet[e.i] || deadSet[e.j]) continue;
+        if (hasEdge(selected, e.i, e.j)) continue;
+        let s = rng();
+        if (e.i === exitIdx || e.j === exitIdx) s += 5;
+        if (e.i === startIdx || e.j === startIdx) s += 2;
+        if (e.wall && e.wall.dir === "v") s += 0.5;
+        scored.push({ e: e, s: s });
+      }
+      scored.sort(function (a, b) {
+        return b.s - a.s;
+      });
+      if (scored.length) {
+        selected.push(scored[0].e);
+        added = true;
+      }
+      if (!added) break;
+      paths = countPathsToExit(n, selected, startIdx, exitIdx, 3);
+    }
+
+    return selected;
+  }
+
+  function placeSideDecorations(rooms, grid, rng, startRoom, exitRoom) {
+    const decorations = [];
+    const paintingThemes = ["tickle", "feather", "laugh", "ribbon"];
+    for (let ri = 0; ri < rooms.length; ri++) {
+      const r = rooms[ri];
+      const furnSides = [
+        { side: "n", facing: "s" },
+        { side: "s", facing: "n" },
+        { side: "w", facing: "e" },
+        { side: "e", facing: "w" }
+      ];
+      const count = 2 + Math.floor(rng() * 3);
+      for (let fi = 0; fi < count; fi++) {
+        const s = furnSides[Math.floor(rng() * 4)];
+        let fx, fy, fw, fh;
+        if (s.side === "n") {
+          fw = 1 + Math.floor(rng() * 2);
+          fh = 1;
+          fx = r.x + 2 + Math.floor(rng() * Math.max(1, r.w - fw - 4));
+          fy = r.y;
+        } else if (s.side === "s") {
+          fw = 1 + Math.floor(rng() * 2);
+          fh = 1;
+          fx = r.x + 2 + Math.floor(rng() * Math.max(1, r.w - fw - 4));
+          fy = r.y + r.h - 1;
+        } else if (s.side === "w") {
+          fw = 1;
+          fh = 1 + Math.floor(rng() * 2);
+          fx = r.x;
+          fy = r.y + 2 + Math.floor(rng() * Math.max(1, r.h - fh - 4));
+        } else {
+          fw = 1;
+          fh = 1 + Math.floor(rng() * 2);
+          fx = r.x + r.w - 1;
+          fy = r.y + 2 + Math.floor(rng() * Math.max(1, r.h - fh - 4));
+        }
+        let ok = true;
+        for (let yy = fy; yy < fy + fh && ok; yy++) {
+          for (let xx = fx; xx < fx + fw; xx++) {
+            if (!grid[yy] || grid[yy][xx] === TILE.WALL) ok = false;
           }
         }
+        if (!ok) continue;
+        const roll = rng();
+        let type, style, theme;
+        if (roll < 0.34) {
+          type = "painting";
+          style = Math.floor(rng() * paintingThemes.length);
+          theme = paintingThemes[style];
+        } else if (roll < 0.67) {
+          type = "furniture";
+          style = 0;
+          theme = null;
+        } else {
+          type = "furniture";
+          style = 3;
+          theme = null;
+        }
+        decorations.push({
+          type: type,
+          x: fx,
+          y: fy,
+          w: fw,
+          h: fh,
+          facing: s.facing,
+          style: style,
+          theme: theme
+        });
       }
-    }
-
-    for (const [aName, bName] of layout.connections) {
-      const a = roomByName(rooms, aName);
-      const b = roomByName(rooms, bName);
-      if (a && b) carveConnection(grid, a, b, rng);
-    }
-
-    const decorations = (layout.decorations || []).map((d) => Object.assign({}, d));
-
-    // Light corner pillars in larger rooms (solid) — skip vestibule/gate
-    for (const r of rooms) {
-      if (r.name === "vestibule" || r.name === "gate") continue;
-      if (r.w < 14 || r.h < 12) continue;
-      const corners = [
-        { x: r.x + 1, y: r.y + 1 },
-        { x: r.x + r.w - 2, y: r.y + 1 },
-        { x: r.x + 1, y: r.y + r.h - 2 },
-        { x: r.x + r.w - 2, y: r.y + r.h - 2 }
-      ];
-      for (const c of corners) {
-        if (rng() < 0.4 && grid[c.y] && grid[c.y][c.x] === TILE.FLOOR) {
-          // Don't pillar over EXIT/start
-          if (c.x === layout.start.x && c.y === layout.start.y) continue;
-          if (c.x === layout.exit.x && c.y === layout.exit.y) continue;
-          grid[c.y][c.x] = TILE.WALL;
-          decorations.push({ type: "pillar", x: c.x, y: c.y });
+      if (rng() < 0.45) {
+        const corners = [
+          { x: r.x, y: r.y },
+          { x: r.x + r.w - 1, y: r.y },
+          { x: r.x, y: r.y + r.h - 1 },
+          { x: r.x + r.w - 1, y: r.y + r.h - 1 }
+        ];
+        const c = corners[Math.floor(rng() * 4)];
+        if (grid[c.y] && grid[c.y][c.x] !== TILE.WALL) {
+          decorations.push({ type: "cobweb", x: c.x, y: c.y });
         }
       }
     }
 
-    // Ensure start/exit cells are floor then mark EXIT
-    const start = { x: layout.start.x, y: layout.start.y };
-    const exitCell = { x: layout.exit.x, y: layout.exit.y };
-    grid[start.y][start.x] = TILE.FLOOR;
-    grid[exitCell.y][exitCell.x] = TILE.EXIT;
-
-    const startRoom = roomByName(rooms, "vestibule") || rooms[0];
-    const exitRoom = roomByName(rooms, "gate") || rooms[rooms.length - 1];
-
-    return finalizeMansion({
-      grid,
-      cols,
-      rows,
-      rooms,
-      start,
-      exitCell,
-      startRoom,
-      exitRoom,
-      decorations,
-      rng,
-      level,
-      presetTraps: layout.traps || [],
-      seed,
-      maxTraps: 1, // handcrafted L1: 0–1 subtle trap if any room free
-      handcrafted: true
-    });
+    if (startRoom) {
+      const sw = Math.min(6, Math.max(3, Math.floor(startRoom.w / 3)));
+      const sx = startRoom.x + Math.floor((startRoom.w - sw) / 2);
+      decorations.push({
+        type: "stairs",
+        x: sx,
+        y: startRoom.y,
+        w: sw,
+        h: Math.min(3, startRoom.h - 2),
+        facing: "s",
+        gate: "entrance"
+      });
+      decorations.push({
+        type: "entranceGate",
+        x: sx,
+        y: startRoom.y,
+        w: sw,
+        h: 2
+      });
+    }
+    if (exitRoom) {
+      const sw = Math.min(6, Math.max(3, Math.floor(exitRoom.w / 3)));
+      const sx = exitRoom.x + Math.floor((exitRoom.w - sw) / 2);
+      decorations.push({
+        type: "stairs",
+        x: sx,
+        y: exitRoom.y + exitRoom.h - Math.min(3, exitRoom.h - 2),
+        w: sw,
+        h: Math.min(3, exitRoom.h - 2),
+        facing: "s",
+        gate: "exit"
+      });
+    }
+    return decorations;
   }
 
-  /**
-   * Shared post-process: floors list, traps/keys/pickups/enemies, torches, regions.
-   */
-  function finalizeMansion(opts) {
-    const {
-      grid,
-      cols,
-      rows,
-      rooms,
-      start,
-      exitCell,
-      startRoom,
-      exitRoom,
-      decorations,
-      rng,
-      level,
-      seed
-    } = opts;
-    const presetTraps = opts.presetTraps || null;
-    const maxTraps = opts.maxTraps == null ? null : opts.maxTraps;
+  function punchRockLink(grid, rooms, i, j, cols, rows) {
+    const a = rooms[i];
+    const b = rooms[j];
+    const ac = roomCenter(a);
+    const bc = roomCenter(b);
+    if (Math.abs(ac.x - bc.x) > Math.abs(ac.y - bc.y)) {
+      const yLo = Math.max(a.y + 1, b.y + 1);
+      const yHi = Math.min(a.y + a.h - 2, b.y + b.h - 2);
+      const yy = yLo <= yHi ? yLo + Math.floor((yHi - yLo) / 2) : ac.y;
+      const x0 = Math.min(ac.x, bc.x);
+      const x1 = Math.max(ac.x, bc.x);
+      for (let x = x0; x <= x1; x++) {
+        if (yy > 0 && yy < rows - 1 && x > 0 && x < cols - 1) {
+          grid[yy][x] = TILE.FLOOR;
+          if (yy + 1 < rows - 1) grid[yy + 1][x] = TILE.FLOOR;
+        }
+      }
+    } else {
+      const xLo = Math.max(a.x + 1, b.x + 1);
+      const xHi = Math.min(a.x + a.w - 2, b.x + b.w - 2);
+      const xx = xLo <= xHi ? xLo + Math.floor((xHi - xLo) / 2) : ac.x;
+      const y0 = Math.min(ac.y, bc.y);
+      const y1 = Math.max(ac.y, bc.y);
+      for (let y = y0; y <= y1; y++) {
+        if (xx > 0 && xx < cols - 1 && y > 0 && y < rows - 1) {
+          grid[y][xx] = TILE.FLOOR;
+          if (xx + 1 < cols - 1) grid[y][xx + 1] = TILE.FLOOR;
+        }
+      }
+    }
+  }
+
+  function generate(colsHint, rowsHint, seed, level) {
+    const params = levelParams(level || 1);
+    const cols = params.cols;
+    const rows = params.rows;
+    const rng = mulberry32((seed >>> 0) ^ ((level | 0) * 0x9e3779b9));
+    const grid = Array.from({ length: rows }, function () {
+      return Array(cols).fill(TILE.WALL);
+    });
+
+    const margin = Math.max(6, Math.floor(cols * 0.07));
+    const root = {
+      x: margin,
+      y: margin,
+      w: cols - 2 * margin,
+      h: rows - 2 * margin
+    };
+
+    let leaves = bspPartition(root, params.roomCount, rng);
+    if (leaves.length < 5) leaves = bspPartition(root, Math.max(8, params.roomCount), rng);
+
+    const rooms = leaves.map(function (r, i) {
+      return { x: r.x, y: r.y, w: r.w, h: r.h, name: "r" + i };
+    });
+
+    for (let i = 0; i < rooms.length; i++) {
+      carveRect(grid, rooms[i].x, rooms[i].y, rooms[i].w, rooms[i].h);
+    }
+
+    let startIdx = 0;
+    let bestTop = Infinity;
+    for (let i = 0; i < rooms.length; i++) {
+      const r = rooms[i];
+      const score = r.y * 1000 + Math.abs(roomCenter(r).x - cols / 2);
+      if (score < bestTop) {
+        bestTop = score;
+        startIdx = i;
+      }
+    }
+    let exitIdx = 0;
+    let bestBot = -Infinity;
+    for (let i = 0; i < rooms.length; i++) {
+      if (i === startIdx) continue;
+      const r = rooms[i];
+      const score = (r.y + r.h) * 1000 - Math.abs(roomCenter(r).x - cols / 2) * 0.25;
+      if (score > bestBot) {
+        bestBot = score;
+        exitIdx = i;
+      }
+    }
+    if (exitIdx === startIdx) exitIdx = (startIdx + 1) % rooms.length;
+    rooms[startIdx].name = "entrance";
+    rooms[exitIdx].name = "exit";
+
+    const allEdges = buildAdjacency(rooms);
+    const ufAdj = ufMake(rooms.length);
+    for (let i = 0; i < allEdges.length; i++) ufAdj.union(allEdges[i].i, allEdges[i].j);
+    const rootId = ufAdj.find(0);
+    for (let i = 1; i < rooms.length; i++) {
+      if (ufAdj.find(i) === rootId) continue;
+      let best = null;
+      let bestD = Infinity;
+      for (let j = 0; j < rooms.length; j++) {
+        if (ufAdj.find(j) !== rootId) continue;
+        const ca = roomCenter(rooms[i]);
+        const cb = roomCenter(rooms[j]);
+        const d = Math.abs(ca.x - cb.x) + Math.abs(ca.y - cb.y);
+        if (d < bestD) {
+          bestD = d;
+          best = j;
+        }
+      }
+      if (best == null) continue;
+      punchRockLink(grid, rooms, i, best, cols, rows);
+      ufAdj.union(i, best);
+      const sw = sharedWall(rooms[i], rooms[best]);
+      allEdges.push({
+        i: i,
+        j: best,
+        wall: sw || { dir: "v", wall: roomCenter(rooms[i]).x, lo: roomCenter(rooms[i]).y, hi: roomCenter(rooms[i]).y + 1 }
+      });
+    }
+
+    const selected = selectDoorways(rooms, allEdges, startIdx, exitIdx, params.deadEndRate, rng);
+    for (let i = 0; i < selected.length; i++) {
+      const e = selected[i];
+      if (e.wall && (e.wall.dir === "v" || e.wall.dir === "h") && e.wall.lo != null) {
+        carveDoorway(grid, e.wall, rng);
+      }
+    }
+
+    const startRoom = rooms[startIdx];
+    const exitRoom = rooms[exitIdx];
+    const start = {
+      x: startRoom.x + Math.floor(startRoom.w / 2),
+      y: startRoom.y + 1
+    };
+    grid[start.y][start.x] = TILE.FLOOR;
+
+    const exitCell = {
+      x: exitRoom.x + Math.floor(exitRoom.w / 2),
+      y: exitRoom.y + exitRoom.h - 2
+    };
+    grid[exitCell.y][exitCell.x] = TILE.EXIT;
+
+    const decorations = placeSideDecorations(rooms, grid, rng, startRoom, exitRoom);
 
     const floors = [];
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        if (grid[y][x] === TILE.FLOOR) floors.push({ x, y });
+        if (grid[y][x] !== TILE.WALL) floors.push({ x: x, y: y });
       }
     }
 
     function takeFarFrom(px, py, minDist) {
-      const candidates = floors.filter((c) => {
-        const d = Math.abs(c.x - px) + Math.abs(c.y - py);
-        return d >= minDist;
+      const candidates = floors.filter(function (c) {
+        return Math.abs(c.x - px) + Math.abs(c.y - py) >= minDist;
       });
       const pool = candidates.length ? candidates : floors.slice();
       if (!pool.length) return null;
@@ -293,16 +794,15 @@ window.MazeGen = (function () {
       return picked;
     }
 
-    function takeInRoom(room, avoidStart, minDist) {
+    function takeInRoom(room, avoid, minDist) {
       const pool = [];
       for (let i = floors.length - 1; i >= 0; i--) {
         const c = floors[i];
         if (!inRoom(room, c.x, c.y)) continue;
         if (c.x <= room.x || c.x >= room.x + room.w - 1) continue;
         if (c.y <= room.y || c.y >= room.y + room.h - 1) continue;
-        const d = Math.abs(c.x - avoidStart.x) + Math.abs(c.y - avoidStart.y);
-        if (d < minDist) continue;
-        pool.push({ c, i });
+        if (Math.abs(c.x - avoid.x) + Math.abs(c.y - avoid.y) < minDist) continue;
+        pool.push({ c: c, i: i });
       }
       if (!pool.length) return null;
       const pick = pool[Math.floor(rng() * pool.length)];
@@ -310,52 +810,24 @@ window.MazeGen = (function () {
       return pick.c;
     }
 
-    // Remove start from floors pool
     for (let i = floors.length - 1; i >= 0; i--) {
-      if (floors[i].x === start.x && floors[i].y === start.y) floors.splice(i, 1);
-    }
-    // Exit is EXIT tile — remove from floors if still listed
-    for (let i = floors.length - 1; i >= 0; i--) {
-      if (floors[i].x === exitCell.x && floors[i].y === exitCell.y) floors.splice(i, 1);
+      if (
+        (floors[i].x === start.x && floors[i].y === start.y) ||
+        (floors[i].x === exitCell.x && floors[i].y === exitCell.y)
+      ) {
+        floors.splice(i, 1);
+      }
     }
 
     const traps = [];
-    if (presetTraps && presetTraps.length) {
-      for (const t of presetTraps) {
-        if (grid[t.y] && grid[t.y][t.x] === TILE.FLOOR) {
-          grid[t.y][t.x] = TILE.TRAP;
-          traps.push({ x: t.x, y: t.y });
-          for (let i = floors.length - 1; i >= 0; i--) {
-            if (floors[i].x === t.x && floors[i].y === t.y) floors.splice(i, 1);
-          }
-        }
-      }
-    } else if (maxTraps === 0) {
-      // no traps
-    } else if (maxTraps != null) {
-      // Cap traps (handcrafted L1)
-      const n = Math.min(maxTraps, Math.floor(rng() * (maxTraps + 1)));
-      for (let ti = 0; ti < n; ti++) {
-        const nonStart = rooms.filter((r) => r !== startRoom && r !== exitRoom);
-        if (!nonStart.length) break;
-        const pr = nonStart[Math.floor(rng() * nonStart.length)];
-        const t = takeInRoom(pr, start, 6);
-        if (!t) break;
-        grid[t.y][t.x] = TILE.TRAP;
-        traps.push(t);
-      }
-    } else {
-      // Procedural trap density
-      const trapRoomChance = Math.min(0.75, 0.38 + level * 0.06);
-      const trapsPerRoom = 1 + (level >= 4 ? 1 : 0);
-      for (let ri = 0; ri < rooms.length; ri++) {
-        const r = rooms[ri];
-        if (r === startRoom) continue;
-        if (rng() > trapRoomChance) continue;
-        for (let ti = 0; ti < trapsPerRoom; ti++) {
-          const t = takeInRoom(r, start, 5);
-          if (!t) break;
-          if (t.x === exitCell.x && t.y === exitCell.y) continue;
+    if (params.level >= 5 && rng() < 0.35) {
+      const nonSE = rooms.filter(function (_, i) {
+        return i !== startIdx && i !== exitIdx;
+      });
+      if (nonSE.length) {
+        const pr = nonSE[Math.floor(rng() * nonSE.length)];
+        const t = takeInRoom(pr, start, 8);
+        if (t) {
           grid[t.y][t.x] = TILE.TRAP;
           traps.push(t);
         }
@@ -363,604 +835,137 @@ window.MazeGen = (function () {
     }
 
     let potion = null;
-    const potionRooms = rooms.filter((r) => r !== startRoom);
+    const potionRooms = rooms.filter(function (_, i) {
+      return i !== startIdx;
+    });
     if (potionRooms.length) {
-      const pr = potionRooms[Math.floor(rng() * potionRooms.length)];
-      potion = takeInRoom(pr, start, 6);
+      potion = takeInRoom(potionRooms[Math.floor(rng() * potionRooms.length)], start, 6);
     }
-    if (!potion) potion = takeFarFrom(start.x, start.y, 8);
+    if (!potion) potion = takeFarFrom(start.x, start.y, 10);
     if (potion) grid[potion.y][potion.x] = TILE.POTION;
 
     const clothTiles = [TILE.CLOTH_SHIRT, TILE.CLOTH_SHOES, TILE.CLOTH_PANTS];
     const clothPickups = [];
-    for (const ct of clothTiles) {
-      const nonStart = rooms.filter((r) => r !== startRoom);
+    for (let ci = 0; ci < clothTiles.length; ci++) {
+      const ct = clothTiles[ci];
+      const nonStart = rooms.filter(function (_, i) {
+        return i !== startIdx;
+      });
       let c = null;
-      if (nonStart.length) {
-        const pr = nonStart[Math.floor(rng() * nonStart.length)];
-        c = takeInRoom(pr, start, 5);
-      }
-      if (!c) c = takeFarFrom(start.x, start.y, 6);
+      if (nonStart.length) c = takeInRoom(nonStart[Math.floor(rng() * nonStart.length)], start, 5);
+      if (!c) c = takeFarFrom(start.x, start.y, 8);
       if (!c) break;
       grid[c.y][c.x] = ct;
       clothPickups.push({ x: c.x, y: c.y, tile: ct });
     }
 
-    const keyCount = Math.min(5, KEYS_REQUIRED + Math.min(Math.max(level, 1) - 1, 2));
     const keyPickups = [];
-    for (let ki = 0; ki < keyCount; ki++) {
-      const nonStart = rooms.filter((r) => r !== startRoom && r !== exitRoom);
-      const poolRooms = nonStart.length ? nonStart : rooms.filter((r) => r !== startRoom);
-      let k = null;
-      if (poolRooms.length) {
-        const pr = poolRooms[Math.floor(rng() * poolRooms.length)];
-        k = takeInRoom(pr, start, 4);
-      }
-      if (!k) k = takeFarFrom(start.x, start.y, 6);
-      if (!k) break;
-      if (k.x === exitCell.x && k.y === exitCell.y) continue;
-      grid[k.y][k.x] = TILE.KEY;
-      keyPickups.push({ x: k.x, y: k.y });
-    }
-
-    const enemySpawns = [];
-    const minionCount = 2 + level;
-    for (let i = 0; i < minionCount + 1; i++) {
-      const nonStart = rooms.filter((r) => r !== startRoom);
-      let e = null;
-      if (nonStart.length) {
-        const pr = nonStart[Math.floor(rng() * nonStart.length)];
-        e = takeInRoom(pr, start, 8);
-      }
-      if (!e) e = takeFarFrom(start.x, start.y, 10);
-      if (!e) break;
-      enemySpawns.push(e);
-    }
-
-    const torches = [];
-    const torchTarget = 10 + level * 2;
-    const torchCandidates = [];
-    for (let y = 1; y < rows - 1; y++) {
-      for (let x = 1; x < cols - 1; x++) {
-        if (grid[y][x] !== TILE.FLOOR) continue;
-        let wallN = 0;
-        for (const [dx, dy] of [
-          [1, 0],
-          [-1, 0],
-          [0, 1],
-          [0, -1]
-        ]) {
-          if (grid[y + dy][x + dx] === TILE.WALL) wallN++;
-        }
-        if (wallN >= 1) torchCandidates.push({ x, y });
+    const keyRooms = rooms.filter(function (_, i) {
+      return i !== startIdx && i !== exitIdx;
+    });
+    const keyCandidates = [];
+    const kr = keyRooms.length ? keyRooms : rooms;
+    for (let ri = 0; ri < kr.length; ri++) {
+      const r = kr[ri];
+      for (let i = 0; i < floors.length; i++) {
+        const c = floors[i];
+        if (!inRoom(r, c.x, c.y)) continue;
+        if (c.x <= r.x || c.x >= r.x + r.w - 1) continue;
+        if (c.y <= r.y || c.y >= r.y + r.h - 1) continue;
+        keyCandidates.push(c);
       }
     }
-    for (let i = torchCandidates.length - 1; i > 0; i--) {
-      const j = Math.floor(rng() * (i + 1));
-      [torchCandidates[i], torchCandidates[j]] = [torchCandidates[j], torchCandidates[i]];
-    }
-    for (const c of torchCandidates) {
-      if (torches.length >= torchTarget) break;
-      let ok = true;
-      for (const t of torches) {
-        if (Math.abs(t.x - c.x) + Math.abs(t.y - c.y) < 5) {
-          ok = false;
-          break;
-        }
-      }
-      if (!ok) continue;
-      torches.push({ x: c.x, y: c.y });
-      decorations.push({ type: "sconce", x: c.x, y: c.y });
-    }
-
-    function roomIndexAt(x, y) {
-      for (let i = 0; i < rooms.length; i++) {
-        if (inRoom(rooms[i], x, y)) return i;
-      }
-      return -1;
-    }
-
-    const corridors = [];
-    const seenHall = Array.from({ length: rows }, () => Array(cols).fill(false));
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        if (grid[y][x] === TILE.WALL) continue;
-        if (roomIndexAt(x, y) >= 0) continue;
-        if (seenHall[y][x]) continue;
-        const cells = [];
-        const stack = [[x, y]];
-        seenHall[y][x] = true;
-        let minX = x,
-          maxX = x,
-          minY = y,
-          maxY = y;
-        while (stack.length) {
-          const [cx, cy] = stack.pop();
-          cells.push({ x: cx, y: cy });
-          if (cx < minX) minX = cx;
-          if (cx > maxX) maxX = cx;
-          if (cy < minY) minY = cy;
-          if (cy > maxY) maxY = cy;
-          for (const [dx, dy] of [
-            [1, 0],
-            [-1, 0],
-            [0, 1],
-            [0, -1]
-          ]) {
-            const nx = cx + dx,
-              ny = cy + dy;
-            if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
-            if (seenHall[ny][nx]) continue;
-            if (grid[ny][nx] === TILE.WALL) continue;
-            if (roomIndexAt(nx, ny) >= 0) continue;
-            seenHall[ny][nx] = true;
-            stack.push([nx, ny]);
-          }
-        }
-        corridors.push({
-          kind: "corridor",
-          x: minX,
-          y: minY,
-          w: maxX - minX + 1,
-          h: maxY - minY + 1,
-          cells
-        });
-      }
-    }
-
-    const regionAt = Array.from({ length: rows }, () => Array(cols).fill(null));
-    for (let i = 0; i < rooms.length; i++) {
-      const r = rooms[i];
-      r.kind = "room";
-      r.id = i;
-      for (let y = r.y; y < r.y + r.h; y++) {
-        for (let x = r.x; x < r.x + r.w; x++) {
-          if (y < 0 || x < 0 || y >= rows || x >= cols) continue;
-          if (grid[y][x] === TILE.WALL) continue;
-          regionAt[y][x] = r;
-        }
-      }
-    }
-    for (let i = 0; i < corridors.length; i++) {
-      const c = corridors[i];
-      c.id = rooms.length + i;
-      for (const cell of c.cells) {
-        regionAt[cell.y][cell.x] = c;
-      }
-    }
-
-    const regions = rooms.concat(corridors);
-
-    return {
-      cols,
-      rows,
-      grid,
-      start,
-      exit: exitCell,
-      traps,
-      potion,
-      clothPickups,
-      keyPickups,
-      keysRequired: KEYS_REQUIRED,
-      keysPlaced: keyPickups.length,
-      enemySpawns,
-      torches,
-      decorations,
-      rooms,
-      corridors,
-      regions,
-      regionAt,
-      seed,
-      TILE,
-      handcrafted: !!opts.handcrafted
-    };
-  }
-
-  function generate(cols, rows, seed, level) {
-    // Level 1: handcrafted mansion from maps/level-01.jpg art
-    if (level === 1 && typeof window !== "undefined" && window.Level01) {
-      const built = generateHandcrafted(window.Level01, seed, level);
-      built.handcrafted = true;
-      return built;
-    }
-
-    const rng = mulberry32(seed >>> 0);
-    const grid = Array.from({ length: rows }, () => Array(cols).fill(TILE.WALL));
-
-    // Place spacious OPEN rooms with a gap so walls separate them
-    // Higher levels: more rooms, slightly larger footprints
-    const rooms = [];
-    const roomTarget = 8 + Math.min(level * 2, 12);
-    const maxAttempts = 280;
-    const gap = 3; // wall strip between larger rooms; doorways carve through
-    const sizeBoost = Math.min(level - 1, 4);
-    for (let attempt = 0; attempt < maxAttempts && rooms.length < roomTarget; attempt++) {
-      const w = 16 + Math.floor(rng() * 12) + Math.floor(sizeBoost); // ~2× footprint; grows with level
-      const h = 14 + Math.floor(rng() * 10) + Math.floor(sizeBoost);
-      const x = 2 + Math.floor(rng() * (cols - w - 4));
-      const y = 2 + Math.floor(rng() * (rows - h - 4));
-      let overlaps = false;
-      for (const r of rooms) {
-        if (
-          x < r.x + r.w + gap &&
-          x + w + gap > r.x &&
-          y < r.y + r.h + gap &&
-          y + h + gap > r.y
-        ) {
-          overlaps = true;
-          break;
-        }
-      }
-      if (overlaps) continue;
-      const room = { x, y, w, h };
-      carveRect(grid, x, y, w, h);
-      rooms.push(room);
-    }
-
-    // Fill remaining room slots with slightly smaller rooms if packing was tight
-    for (let attempt = 0; attempt < 200 && rooms.length < roomTarget; attempt++) {
-      const w = 12 + Math.floor(rng() * (10 + Math.floor(sizeBoost)));
-      const h = 10 + Math.floor(rng() * (8 + Math.floor(sizeBoost)));
-      const x = 2 + Math.floor(rng() * (cols - w - 4));
-      const y = 2 + Math.floor(rng() * (rows - h - 4));
-      let overlaps = false;
-      for (const r of rooms) {
-        if (
-          x < r.x + r.w + gap &&
-          x + w + gap > r.x &&
-          y < r.y + r.h + gap &&
-          y + h + gap > r.y
-        ) {
-          overlaps = true;
-          break;
-        }
-      }
-      if (overlaps) continue;
-      const room = { x, y, w, h };
-      carveRect(grid, x, y, w, h);
-      rooms.push(room);
-    }
-
-    if (rooms.length < 3) {
-      const fallbacks = [
-        { x: 3, y: 3, w: 22, h: 18 },
-        { x: Math.floor(cols / 2) - 10, y: Math.floor(rows / 2) - 8, w: 24, h: 20 },
-        { x: cols - 28, y: rows - 24, w: 22, h: 18 }
-      ];
-      for (const r of fallbacks) {
-        if (r.x + r.w >= cols - 1 || r.y + r.h >= rows - 1) continue;
-        let overlaps = false;
-        for (const o of rooms) {
-          if (
-            r.x < o.x + o.w + gap &&
-            r.x + r.w + gap > o.x &&
-            r.y < o.y + o.h + gap &&
-            r.y + r.h + gap > o.y
-          ) {
-            overlaps = true;
-            break;
-          }
-        }
-        if (overlaps) continue;
-        carveRect(grid, r.x, r.y, r.w, r.h);
-        rooms.push(r);
-      }
-    }
-
-    // Connect rooms (nearest-neighbor MST) via short doorways / halls only
-    const connected = [0];
-    const remaining = rooms.map((_, i) => i).slice(1);
-    while (remaining.length) {
-      let bestI = 0,
-        bestJ = 0,
-        bestD = Infinity;
-      for (const i of connected) {
-        const a = roomCenter(rooms[i]);
-        for (let ri = 0; ri < remaining.length; ri++) {
-          const j = remaining[ri];
-          const b = roomCenter(rooms[j]);
-          const d = Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-          if (d < bestD) {
-            bestD = d;
-            bestI = i;
-            bestJ = ri;
-          }
-        }
-      }
-      const j = remaining.splice(bestJ, 1)[0];
-      carveConnection(grid, rooms[bestI], rooms[j], rng);
-      connected.push(j);
-    }
-    // Extra loops between nearby rooms — more connections on deeper levels
-    const extra = 1 + level;
-    for (let i = 0; i < extra && rooms.length > 2; i++) {
-      let bestA = 0,
-        bestB = 1,
-        bestD = Infinity;
-      for (let a = 0; a < rooms.length; a++) {
-        for (let b = a + 1; b < rooms.length; b++) {
-          const ca = roomCenter(rooms[a]);
-          const cb = roomCenter(rooms[b]);
-          const d = Math.abs(ca.x - cb.x) + Math.abs(ca.y - cb.y);
-          if (d < bestD && d > 0) {
-            // prefer mid-distance pairs for loops
-            bestD = d;
-            bestA = a;
-            bestB = b;
-          }
-        }
-      }
-      // pick a random nearby pair instead of always the closest already connected
-      const a = Math.floor(rng() * rooms.length);
-      let b = Math.floor(rng() * rooms.length);
-      if (a === b) b = (b + 1) % rooms.length;
-      const ca = roomCenter(rooms[a]);
-      const cb = roomCenter(rooms[b]);
-      const d = Math.abs(ca.x - cb.x) + Math.abs(ca.y - cb.y);
-      if (d < 28) carveConnection(grid, rooms[a], rooms[b], rng);
-      else carveConnection(grid, rooms[bestA], rooms[bestB], rng);
-    }
-
-    // Corner pillars only (1-tile, edges) — do NOT fill rooms into a maze
-    const decorations = [];
-    for (const r of rooms) {
-      if (r.w < 6 || r.h < 6) continue;
-      const corners = [
-        { x: r.x + 1, y: r.y + 1 },
-        { x: r.x + r.w - 2, y: r.y + 1 },
-        { x: r.x + 1, y: r.y + r.h - 2 },
-        { x: r.x + r.w - 2, y: r.y + r.h - 2 }
-      ];
-      for (const c of corners) {
-        if (rng() < 0.55) {
-          // Pillars are solid wall tiles at corners only
-          if (grid[c.y][c.x] === TILE.FLOOR) {
-            grid[c.y][c.x] = TILE.WALL;
-            decorations.push({ type: "pillar", x: c.x, y: c.y });
-          }
-        }
-      }
-    }
-
-    // Walkable manor decorations (rugs, furniture silhouettes) — never block pathing
-    for (const r of rooms) {
-      // Rug near center
-      if (r.w >= 7 && r.h >= 6 && rng() < 0.75) {
-        const rw = 2 + Math.floor(rng() * Math.min(3, r.w - 4));
-        const rh = 2 + Math.floor(rng() * Math.min(2, r.h - 4));
-        const rx = r.x + 2 + Math.floor(rng() * Math.max(1, r.w - rw - 4));
-        const ry = r.y + 2 + Math.floor(rng() * Math.max(1, r.h - rh - 4));
-        decorations.push({ type: "rug", x: rx, y: ry, w: rw, h: rh });
-      }
-      // Furniture silhouettes along walls (visual only)
-      const furnCount = 1 + Math.floor(rng() * 3);
-      for (let fi = 0; fi < furnCount; fi++) {
-        const side = Math.floor(rng() * 4);
-        let fx, fy, fw, fh, facing;
-        if (side === 0) {
-          // top wall
-          fw = 1 + Math.floor(rng() * 2);
-          fh = 1;
-          fx = r.x + 2 + Math.floor(rng() * Math.max(1, r.w - fw - 4));
-          fy = r.y;
-          facing = "s";
-        } else if (side === 1) {
-          fw = 1 + Math.floor(rng() * 2);
-          fh = 1;
-          fx = r.x + 2 + Math.floor(rng() * Math.max(1, r.w - fw - 4));
-          fy = r.y + r.h - 1;
-          facing = "n";
-        } else if (side === 2) {
-          fw = 1;
-          fh = 1 + Math.floor(rng() * 2);
-          fx = r.x;
-          fy = r.y + 2 + Math.floor(rng() * Math.max(1, r.h - fh - 4));
-          facing = "e";
+    const pickedKeys = [];
+    for (let ki = 0; ki < KEYS_REQUIRED; ki++) {
+      if (!keyCandidates.length) break;
+      let best = null;
+      let bestScore = -1;
+      const sampleN = Math.min(keyCandidates.length, 400);
+      for (let s = 0; s < sampleN; s++) {
+        const c = keyCandidates[Math.floor(rng() * keyCandidates.length)];
+        let minD = Infinity;
+        if (!pickedKeys.length) {
+          minD = Math.abs(c.x - start.x) + Math.abs(c.y - start.y);
         } else {
-          fw = 1;
-          fh = 1 + Math.floor(rng() * 2);
-          fx = r.x + r.w - 1;
-          fy = r.y + 2 + Math.floor(rng() * Math.max(1, r.h - fh - 4));
-          facing = "w";
-        }
-        // Only place if those cells are still floor (not pillar)
-        let ok = true;
-        for (let yy = fy; yy < fy + fh && ok; yy++) {
-          for (let xx = fx; xx < fx + fw; xx++) {
-            if (yy < 0 || xx < 0 || yy >= rows || xx >= cols || grid[yy][xx] === TILE.WALL) {
-              ok = false;
-              break;
-            }
+          for (let p = 0; p < pickedKeys.length; p++) {
+            const d = Math.abs(c.x - pickedKeys[p].x) + Math.abs(c.y - pickedKeys[p].y);
+            if (d < minD) minD = d;
           }
         }
-        if (ok) {
-          decorations.push({
-            type: "furniture",
-            x: fx,
-            y: fy,
-            w: fw,
-            h: fh,
-            facing,
-            style: Math.floor(rng() * 3)
-          });
+        const dSE =
+          Math.min(
+            Math.abs(c.x - start.x) + Math.abs(c.y - start.y),
+            Math.abs(c.x - exitCell.x) + Math.abs(c.y - exitCell.y)
+          ) * 0.15;
+        const score = minD + dSE;
+        if (score > bestScore) {
+          bestScore = score;
+          best = c;
         }
       }
-    }
-
-    // Collect floors (walkable — excludes corner pillars)
-    const floors = [];
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        if (grid[y][x] === TILE.FLOOR) floors.push({ x, y });
-      }
-    }
-
-    function takeFarFrom(px, py, minDist) {
-      const candidates = floors.filter((c) => {
-        const d = Math.abs(c.x - px) + Math.abs(c.y - py);
-        return d >= minDist;
-      });
-      const pool = candidates.length ? candidates : floors.slice();
-      if (!pool.length) return null;
-      const i = Math.floor(rng() * pool.length);
-      const picked = pool[i];
+      if (!best) break;
+      pickedKeys.push(best);
+      grid[best.y][best.x] = TILE.KEY;
+      keyPickups.push({ x: best.x, y: best.y });
       for (let fi = floors.length - 1; fi >= 0; fi--) {
-        if (floors[fi].x === picked.x && floors[fi].y === picked.y) {
+        if (floors[fi].x === best.x && floors[fi].y === best.y) {
           floors.splice(fi, 1);
           break;
         }
       }
-      return picked;
-    }
-
-    function takeInRoom(room, avoidStart, minDist) {
-      const pool = [];
-      for (let i = floors.length - 1; i >= 0; i--) {
-        const c = floors[i];
-        if (!inRoom(room, c.x, c.y)) continue;
-        // Prefer open interior (not right on the boundary wall edge)
-        if (c.x <= room.x || c.x >= room.x + room.w - 1) continue;
-        if (c.y <= room.y || c.y >= room.y + room.h - 1) continue;
-        const d = Math.abs(c.x - avoidStart.x) + Math.abs(c.y - avoidStart.y);
-        if (d < minDist) continue;
-        pool.push({ c, i });
-      }
-      if (!pool.length) return null;
-      const pick = pool[Math.floor(rng() * pool.length)];
-      floors.splice(pick.i, 1);
-      return pick.c;
-    }
-
-    const startRoom = rooms[0];
-    const start = roomCenter(startRoom);
-    // Ensure start cell is floor (in case a pillar landed there — unlikely at center)
-    if (grid[start.y][start.x] === TILE.WALL) {
-      grid[start.y][start.x] = TILE.FLOOR;
-      floors.push({ x: start.x, y: start.y });
-    }
-    for (let i = floors.length - 1; i >= 0; i--) {
-      if (floors[i].x === start.x && floors[i].y === start.y) floors.splice(i, 1);
-    }
-
-    // Exit in farthest room center area
-    let exitRoom = rooms[rooms.length - 1];
-    let bestFar = -1;
-    for (const r of rooms) {
-      const c = roomCenter(r);
-      const d = Math.abs(c.x - start.x) + Math.abs(c.y - start.y);
-      if (d > bestFar) {
-        bestFar = d;
-        exitRoom = r;
+      for (let ci = keyCandidates.length - 1; ci >= 0; ci--) {
+        if (keyCandidates[ci].x === best.x && keyCandidates[ci].y === best.y) {
+          keyCandidates.splice(ci, 1);
+        }
       }
     }
-    let exitCell = takeInRoom(exitRoom, start, 4);
-    if (!exitCell) exitCell = takeFarFrom(start.x, start.y, Math.floor((cols + rows) / 4));
-    if (!exitCell) exitCell = { x: roomCenter(exitRoom).x, y: roomCenter(exitRoom).y };
-    grid[exitCell.y][exitCell.x] = TILE.EXIT;
-
-    // Traps on open room floors — denser on deeper levels (still not in halls)
-    const traps = [];
-    const trapRoomChance = Math.min(0.75, 0.38 + level * 0.06);
-    const trapsPerRoom = 1 + (level >= 4 ? 1 : 0);
-    for (let ri = 0; ri < rooms.length; ri++) {
-      const r = rooms[ri];
-      if (r === startRoom) continue;
-      if (rng() > trapRoomChance) continue;
-      for (let ti = 0; ti < trapsPerRoom; ti++) {
-        const t = takeInRoom(r, start, 5);
-        if (!t) break;
-        if (t.x === exitCell.x && t.y === exitCell.y) continue;
-        grid[t.y][t.x] = TILE.TRAP;
-        traps.push(t);
-      }
-    }
-
-    let potion = null;
-    // Potion in a non-start room interior
-    const potionRooms = rooms.filter((r) => r !== startRoom);
-    if (potionRooms.length) {
-      const pr = potionRooms[Math.floor(rng() * potionRooms.length)];
-      potion = takeInRoom(pr, start, 6);
-    }
-    if (!potion) potion = takeFarFrom(start.x, start.y, 8);
-    if (potion) grid[potion.y][potion.x] = TILE.POTION;
-
-    const clothTiles = [TILE.CLOTH_SHIRT, TILE.CLOTH_SHOES, TILE.CLOTH_PANTS];
-    const clothPickups = [];
-    for (const ct of clothTiles) {
-      const nonStart = rooms.filter((r) => r !== startRoom);
-      let c = null;
-      if (nonStart.length) {
-        const pr = nonStart[Math.floor(rng() * nonStart.length)];
-        c = takeInRoom(pr, start, 5);
-      }
-      if (!c) c = takeFarFrom(start.x, start.y, 6);
-      if (!c) break;
-      grid[c.y][c.x] = ct;
-      clothPickups.push({ x: c.x, y: c.y, tile: ct });
-    }
-
-    // Manor keys — scatter 3–5 through open rooms (need KEYS_REQUIRED to open gate)
-    const keyCount = Math.min(5, KEYS_REQUIRED + Math.min(level - 1, 2));
-    const keyPickups = [];
-    for (let ki = 0; ki < keyCount; ki++) {
-      const nonStart = rooms.filter((r) => r !== startRoom && r !== exitRoom);
-      const poolRooms = nonStart.length ? nonStart : rooms.filter((r) => r !== startRoom);
-      let k = null;
-      if (poolRooms.length) {
-        const pr = poolRooms[Math.floor(rng() * poolRooms.length)];
-        k = takeInRoom(pr, start, 4);
-      }
-      if (!k) k = takeFarFrom(start.x, start.y, 6);
+    while (keyPickups.length < KEYS_REQUIRED) {
+      const k = takeFarFrom(start.x, start.y, 8);
       if (!k) break;
-      if (k.x === exitCell.x && k.y === exitCell.y) continue;
       grid[k.y][k.x] = TILE.KEY;
-      keyPickups.push({ x: k.x, y: k.y });
+      keyPickups.push(k);
     }
 
     const enemySpawns = [];
-    // 1 succubus + scaling minions (more on deeper levels)
-    const minionCount = 2 + level;
+    const minionCount = 2 + Math.min(params.level, 10);
     for (let i = 0; i < minionCount + 1; i++) {
-      const nonStart = rooms.filter((r) => r !== startRoom);
+      const nonStart = rooms.filter(function (_, ri) {
+        return ri !== startIdx;
+      });
       let e = null;
-      if (nonStart.length) {
-        const pr = nonStart[Math.floor(rng() * nonStart.length)];
-        e = takeInRoom(pr, start, 8);
-      }
-      if (!e) e = takeFarFrom(start.x, start.y, 10);
+      if (nonStart.length) e = takeInRoom(nonStart[Math.floor(rng() * nonStart.length)], start, 10);
+      if (!e) e = takeFarFrom(start.x, start.y, 12);
       if (!e) break;
       enemySpawns.push(e);
     }
 
-    // Wall sconces along room boundary walls (and short halls)
     const torches = [];
-    const torchTarget = 10 + level * 2;
+    const torchTarget = 12 + params.level * 2;
     const torchCandidates = [];
     for (let y = 1; y < rows - 1; y++) {
       for (let x = 1; x < cols - 1; x++) {
-        if (grid[y][x] !== TILE.FLOOR) continue;
+        if (grid[y][x] === TILE.WALL) continue;
         let wallN = 0;
-        for (const [dx, dy] of [
-          [1, 0],
-          [-1, 0],
-          [0, 1],
-          [0, -1]
-        ]) {
-          if (grid[y + dy][x + dx] === TILE.WALL) wallN++;
-        }
-        if (wallN >= 1) torchCandidates.push({ x, y });
+        if (grid[y][x + 1] === TILE.WALL) wallN++;
+        if (grid[y][x - 1] === TILE.WALL) wallN++;
+        if (grid[y + 1][x] === TILE.WALL) wallN++;
+        if (grid[y - 1][x] === TILE.WALL) wallN++;
+        if (wallN >= 1) torchCandidates.push({ x: x, y: y });
       }
     }
     for (let i = torchCandidates.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
-      [torchCandidates[i], torchCandidates[j]] = [torchCandidates[j], torchCandidates[i]];
+      const tmp = torchCandidates[i];
+      torchCandidates[i] = torchCandidates[j];
+      torchCandidates[j] = tmp;
     }
-    for (const c of torchCandidates) {
+    const torchSpacing = Math.max(4, Math.floor(cols / 40));
+    for (let ti = 0; ti < torchCandidates.length; ti++) {
       if (torches.length >= torchTarget) break;
+      const c = torchCandidates[ti];
       let ok = true;
-      for (const t of torches) {
-        if (Math.abs(t.x - c.x) + Math.abs(t.y - c.y) < 5) {
+      for (let t = 0; t < torches.length; t++) {
+        if (Math.abs(torches[t].x - c.x) + Math.abs(torches[t].y - c.y) < torchSpacing) {
           ok = false;
           break;
         }
@@ -970,64 +975,9 @@ window.MazeGen = (function () {
       decorations.push({ type: "sconce", x: c.x, y: c.y });
     }
 
-    // Corridor / hallway regions: floor cells not inside any room rect
-    function roomIndexAt(x, y) {
-      for (let i = 0; i < rooms.length; i++) {
-        if (inRoom(rooms[i], x, y)) return i;
-      }
-      return -1;
-    }
-
-    const corridors = [];
-    const seenHall = Array.from({ length: rows }, () => Array(cols).fill(false));
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        if (grid[y][x] === TILE.WALL) continue;
-        if (roomIndexAt(x, y) >= 0) continue;
-        if (seenHall[y][x]) continue;
-        const cells = [];
-        const stack = [[x, y]];
-        seenHall[y][x] = true;
-        let minX = x,
-          maxX = x,
-          minY = y,
-          maxY = y;
-        while (stack.length) {
-          const [cx, cy] = stack.pop();
-          cells.push({ x: cx, y: cy });
-          if (cx < minX) minX = cx;
-          if (cx > maxX) maxX = cx;
-          if (cy < minY) minY = cy;
-          if (cy > maxY) maxY = cy;
-          for (const [dx, dy] of [
-            [1, 0],
-            [-1, 0],
-            [0, 1],
-            [0, -1]
-          ]) {
-            const nx = cx + dx,
-              ny = cy + dy;
-            if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
-            if (seenHall[ny][nx]) continue;
-            if (grid[ny][nx] === TILE.WALL) continue;
-            if (roomIndexAt(nx, ny) >= 0) continue;
-            seenHall[ny][nx] = true;
-            stack.push([nx, ny]);
-          }
-        }
-        corridors.push({
-          kind: "corridor",
-          x: minX,
-          y: minY,
-          w: maxX - minX + 1,
-          h: maxY - minY + 1,
-          cells
-        });
-      }
-    }
-
-    // Tag rooms and build cell → region lookup
-    const regionAt = Array.from({ length: rows }, () => Array(cols).fill(null));
+    const regionAt = Array.from({ length: rows }, function () {
+      return Array(cols).fill(null);
+    });
     for (let i = 0; i < rooms.length; i++) {
       const r = rooms[i];
       r.kind = "room";
@@ -1040,90 +990,186 @@ window.MazeGen = (function () {
         }
       }
     }
-    for (let i = 0; i < corridors.length; i++) {
-      const c = corridors[i];
-      c.id = rooms.length + i;
-      for (const cell of c.cells) {
-        regionAt[cell.y][cell.x] = c;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (grid[y][x] === TILE.WALL) continue;
+        if (regionAt[y][x]) continue;
+        let best = null;
+        let bestD = Infinity;
+        for (let ri = 0; ri < rooms.length; ri++) {
+          const r = rooms[ri];
+          const cx = Math.max(r.x, Math.min(r.x + r.w - 1, x));
+          const cy = Math.max(r.y, Math.min(r.y + r.h - 1, y));
+          const d = Math.abs(cx - x) + Math.abs(cy - y);
+          if (d < bestD) {
+            bestD = d;
+            best = r;
+          }
+        }
+        if (best) regionAt[y][x] = best;
       }
     }
 
-    const regions = rooms.concat(corridors);
+    const corridors = [];
+    const regions = rooms.slice();
+
+    const allFloors = [];
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (grid[y][x] !== TILE.WALL) allFloors.push({ x: x, y: y });
+      }
+    }
+
+    const seen = {};
+    const q = [start.x + "," + start.y];
+    seen[q[0]] = true;
+    const dirs = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1]
+    ];
+    for (let qi = 0; qi < q.length; qi++) {
+      const parts = q[qi].split(",");
+      const cx = +parts[0];
+      const cy = +parts[1];
+      for (let di = 0; di < dirs.length; di++) {
+        const nx = cx + dirs[di][0];
+        const ny = cy + dirs[di][1];
+        if (ny < 0 || nx < 0 || ny >= rows || nx >= cols) continue;
+        if (grid[ny][nx] === TILE.WALL) continue;
+        const k = nx + "," + ny;
+        if (seen[k]) continue;
+        seen[k] = true;
+        q.push(k);
+      }
+    }
+
+    // Actual dead-end room count for reporting
+    const deg = degreeMap(selected, rooms.length);
+    let deadEnds = 0;
+    for (let i = 0; i < deg.length; i++) {
+      if (deg[i] === 1) deadEnds++;
+    }
 
     return {
-      cols,
-      rows,
-      grid,
-      start,
+      cols: cols,
+      rows: rows,
+      grid: grid,
+      start: start,
       exit: exitCell,
-      traps,
-      potion,
-      clothPickups,
-      keyPickups,
+      traps: traps,
+      potion: potion,
+      clothPickups: clothPickups,
+      keyPickups: keyPickups,
       keysRequired: KEYS_REQUIRED,
       keysPlaced: keyPickups.length,
-      enemySpawns,
-      torches,
-      decorations,
-      rooms,
-      corridors,
-      regions,
-      regionAt,
-      seed,
-      TILE
+      enemySpawns: enemySpawns,
+      torches: torches,
+      decorations: decorations,
+      rooms: rooms,
+      corridors: corridors,
+      regions: regions,
+      regionAt: regionAt,
+      floors: allFloors,
+      seed: seed,
+      TILE: TILE,
+      level: params.level,
+      deadEndRate: params.deadEndRate,
+      deadEndRooms: deadEnds,
+      roomCount: rooms.length,
+      reachableFloor: q.length,
+      exitReachable: !!seen[exitCell.x + "," + exitCell.y],
+      handcrafted: false
     };
   }
 
-  /**
-   * Pick a random floor tile far from the player and from avoidPoints.
-   * avoidPoints are world positions {x, y} (centers). Retries with relaxed
-   * spacing if needed so respawns never bunch up.
-   */
   function randomFloorFar(maze, px, py, minDist, avoidPoints, minPeerDist) {
     const peerMin = minPeerDist == null ? 6 : minPeerDist;
     const playerMin = minDist == null ? 10 : minDist;
     const avoid = avoidPoints || [];
+    const list = maze.floors || null;
 
     function collect(pMin, eMin) {
-      const floors = [];
-      for (let y = 0; y < maze.rows; y++) {
-        for (let x = 0; x < maze.cols; x++) {
+      const out = [];
+      if (list && list.length) {
+        const step = list.length > 8000 ? Math.ceil(list.length / 6000) : 1;
+        for (let i = 0; i < list.length; i += step) {
+          const x = list[i].x;
+          const y = list[i].y;
           if (maze.grid[y][x] === TILE.WALL) continue;
-          const cx = x + 0.5,
-            cy = y + 0.5;
+          const cx = x + 0.5;
+          const cy = y + 0.5;
           const dPlayer = Math.hypot(cx - px, cy - py);
           if (dPlayer < pMin) continue;
           let ok = true;
-          for (const a of avoid) {
-            if (Math.hypot(cx - a.x, cy - a.y) < eMin) {
+          for (let ai = 0; ai < avoid.length; ai++) {
+            if (Math.hypot(cx - avoid[ai].x, cy - avoid[ai].y) < eMin) {
               ok = false;
               break;
             }
           }
           if (!ok) continue;
-          floors.push({ x, y, d: dPlayer });
+          out.push({ x: x, y: y, d: dPlayer });
+        }
+        return out;
+      }
+      for (let y = 0; y < maze.rows; y++) {
+        for (let x = 0; x < maze.cols; x++) {
+          if (maze.grid[y][x] === TILE.WALL) continue;
+          const cx = x + 0.5;
+          const cy = y + 0.5;
+          const dPlayer = Math.hypot(cx - px, cy - py);
+          if (dPlayer < pMin) continue;
+          let ok = true;
+          for (let ai = 0; ai < avoid.length; ai++) {
+            if (Math.hypot(cx - avoid[ai].x, cy - avoid[ai].y) < eMin) {
+              ok = false;
+              break;
+            }
+          }
+          if (!ok) continue;
+          out.push({ x: x, y: y, d: dPlayer });
         }
       }
-      return floors;
+      return out;
     }
 
     let floors = collect(playerMin, peerMin);
     if (!floors.length) floors = collect(Math.max(4, playerMin * 0.5), Math.max(3, peerMin * 0.5));
     if (!floors.length) floors = collect(2, 2);
     if (!floors.length) {
-      for (let y = 0; y < maze.rows; y++) {
-        for (let x = 0; x < maze.cols; x++) {
-          if (maze.grid[y][x] === TILE.WALL) continue;
-          if (Math.floor(px) === x && Math.floor(py) === y) continue;
-          floors.push({ x, y, d: 0 });
+      if (list) {
+        for (let i = 0; i < list.length; i++) {
+          const c = list[i];
+          if (maze.grid[c.y][c.x] === TILE.WALL) continue;
+          if (Math.floor(px) === c.x && Math.floor(py) === c.y) continue;
+          floors.push({ x: c.x, y: c.y, d: 0 });
+        }
+      } else {
+        for (let y = 0; y < maze.rows; y++) {
+          for (let x = 0; x < maze.cols; x++) {
+            if (maze.grid[y][x] === TILE.WALL) continue;
+            if (Math.floor(px) === x && Math.floor(py) === y) continue;
+            floors.push({ x: x, y: y, d: 0 });
+          }
         }
       }
     }
     if (!floors.length) return null;
-    floors.sort((a, b) => b.d - a.d);
+    floors.sort(function (a, b) {
+      return b.d - a.d;
+    });
     const top = floors.slice(0, Math.max(8, Math.floor(floors.length * 0.4)));
     return top[Math.floor(Math.random() * top.length)];
   }
 
-  return { generate, TILE, KEYS_REQUIRED, mulberry32, randomFloorFar };
+  return {
+    generate: generate,
+    TILE: TILE,
+    KEYS_REQUIRED: KEYS_REQUIRED,
+    mulberry32: mulberry32,
+    randomFloorFar: randomFloorFar,
+    levelParams: levelParams
+  };
 })();
