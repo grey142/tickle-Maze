@@ -549,6 +549,86 @@ window.MazeGen = (function () {
       decorations.push({ type: "sconce", x: c.x, y: c.y });
     }
 
+    // Corridor / hallway regions: floor cells not inside any room rect
+    function roomIndexAt(x, y) {
+      for (let i = 0; i < rooms.length; i++) {
+        if (inRoom(rooms[i], x, y)) return i;
+      }
+      return -1;
+    }
+
+    const corridors = [];
+    const seenHall = Array.from({ length: rows }, () => Array(cols).fill(false));
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (grid[y][x] === TILE.WALL) continue;
+        if (roomIndexAt(x, y) >= 0) continue;
+        if (seenHall[y][x]) continue;
+        const cells = [];
+        const stack = [[x, y]];
+        seenHall[y][x] = true;
+        let minX = x,
+          maxX = x,
+          minY = y,
+          maxY = y;
+        while (stack.length) {
+          const [cx, cy] = stack.pop();
+          cells.push({ x: cx, y: cy });
+          if (cx < minX) minX = cx;
+          if (cx > maxX) maxX = cx;
+          if (cy < minY) minY = cy;
+          if (cy > maxY) maxY = cy;
+          for (const [dx, dy] of [
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1]
+          ]) {
+            const nx = cx + dx,
+              ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+            if (seenHall[ny][nx]) continue;
+            if (grid[ny][nx] === TILE.WALL) continue;
+            if (roomIndexAt(nx, ny) >= 0) continue;
+            seenHall[ny][nx] = true;
+            stack.push([nx, ny]);
+          }
+        }
+        corridors.push({
+          kind: "corridor",
+          x: minX,
+          y: minY,
+          w: maxX - minX + 1,
+          h: maxY - minY + 1,
+          cells
+        });
+      }
+    }
+
+    // Tag rooms and build cell → region lookup
+    const regionAt = Array.from({ length: rows }, () => Array(cols).fill(null));
+    for (let i = 0; i < rooms.length; i++) {
+      const r = rooms[i];
+      r.kind = "room";
+      r.id = i;
+      for (let y = r.y; y < r.y + r.h; y++) {
+        for (let x = r.x; x < r.x + r.w; x++) {
+          if (y < 0 || x < 0 || y >= rows || x >= cols) continue;
+          if (grid[y][x] === TILE.WALL) continue;
+          regionAt[y][x] = r;
+        }
+      }
+    }
+    for (let i = 0; i < corridors.length; i++) {
+      const c = corridors[i];
+      c.id = rooms.length + i;
+      for (const cell of c.cells) {
+        regionAt[cell.y][cell.x] = c;
+      }
+    }
+
+    const regions = rooms.concat(corridors);
+
     return {
       cols,
       rows,
@@ -565,6 +645,9 @@ window.MazeGen = (function () {
       torches,
       decorations,
       rooms,
+      corridors,
+      regions,
+      regionAt,
       seed,
       TILE
     };

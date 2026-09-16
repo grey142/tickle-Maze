@@ -5,8 +5,8 @@
   "use strict";
 
   const TILE = window.MazeGen.TILE;
-  const CELL = 28;
-  // Large mansion — camera frames a window into it
+  const CELL = 40; // closer room framing (~20×14 tiles on 800×560)
+  // Large mansion — camera frames a window into the current room
   const COLS = 48;
   const ROWS = 36;
 
@@ -29,9 +29,11 @@
   const AMBIENT_DARK = 0.72;
   const TORCH_RADIUS = 3.2;
 
-  // Camera deadzone: follow starts ~3/4 from center toward frame edge
-  const CAM_EDGE_FOLLOW = 0.75;
-  const CAM_LERP = 7.5;
+  // Room-locked camera: soft follow inside current region
+  const CAM_EDGE_FOLLOW = 0.55;
+  const CAM_LERP = 8.5;
+  const CAM_ROOM_PAD = 0.35; // keep a little wall fringe; never peek next room
+  const CAM_ROOM_TRANSITION = 5.5;
 
   // Succubus sight
   const SUCC_LOS_RANGE = 11;
@@ -67,7 +69,14 @@
   let particles = [];
   let torchFlicker = 0;
   let resistState = null;
-  let camera = { x: 0, y: 0, initialized: false };
+  let camera = {
+    x: 0,
+    y: 0,
+    initialized: false,
+    regionId: null,
+    transitioning: false
+  };
+  let clothingLossStack = []; // LIFO order of lost pieces (shirt/shoes/pants)
   let animTime = 0;
   let floatTexts = [];
   let heartbeat = { next: 0, gain: null, osc: null };
@@ -79,6 +88,54 @@
 
   function clothingCount(c) {
     return (c.shirt ? 1 : 0) + (c.shoes ? 1 : 0) + (c.pants ? 1 : 0);
+  }
+
+  function isFullyClothed() {
+    return clothingCount(player.clothing) >= 3;
+  }
+
+  /** Record a single-piece loss (LIFO restore). */
+  function loseClothingPiece(piece) {
+    if (!player.clothing[piece]) return false;
+    player.clothing[piece] = false;
+    clothingLossStack.push(piece);
+    return true;
+  }
+
+  /** Strip every worn piece, pushing each onto the LIFO stack (shirt→shoes→pants). */
+  function stripAllClothing() {
+    let any = false;
+    for (const p of ["shirt", "shoes", "pants"]) {
+      if (player.clothing[p]) {
+        player.clothing[p] = false;
+        clothingLossStack.push(p);
+        any = true;
+      }
+    }
+    return any;
+  }
+
+  /**
+   * Restore the last-lost missing piece (LIFO). Returns piece name or null.
+   * Does not modify pickups — caller decides whether to consume.
+   */
+  function restoreLastLostPiece() {
+    if (isFullyClothed()) return null;
+    while (clothingLossStack.length) {
+      const p = clothingLossStack.pop();
+      if (!player.clothing[p]) {
+        player.clothing[p] = true;
+        return p;
+      }
+    }
+    // Stack empty but still missing (edge case): restore first missing
+    for (const p of ["shirt", "shoes", "pants"]) {
+      if (!player.clothing[p]) {
+        player.clothing[p] = true;
+        return p;
+      }
+    }
+    return null;
   }
 
   function computeTicklishnessPct() {
@@ -220,6 +277,7 @@
     const carryRisk = !!opts.carryRisk;
     const prevClothing = player && carryRisk ? { ...player.clothing } : null;
     const prevSens = player && carryRisk ? player.sensitivity : 0;
+    const prevLoss = carryRisk ? clothingLossStack.slice() : [];
 
     if (!keepSeed) levelSeed = (Date.now() ^ (level * 9973)) >>> 0;
     // Deeper levels: slightly larger mansion footprint for more rooms/connections
@@ -272,7 +330,11 @@
     particles = [];
     floatTexts = [];
     invulnUntil = 0;
+    clothingLossStack = prevLoss;
+    if (!carryRisk) clothingLossStack = [];
     camera.initialized = false;
+    camera.regionId = null;
+    camera.transitioning = false;
     heartbeat.next = 0.5;
     updateHUD();
   }
@@ -763,21 +825,17 @@
       spawnPickupFX(tx, ty, "#5eead4");
     }
     if (t === TILE.CLOTH_SHIRT || t === TILE.CLOTH_SHOES || t === TILE.CLOTH_PANTS) {
-      maze.grid[ty][tx] = TILE.FLOOR;
-      const map = {
-        [TILE.CLOTH_SHIRT]: "shirt",
-        [TILE.CLOTH_SHOES]: "shoes",
-        [TILE.CLOTH_PANTS]: "pants"
-      };
-      const piece = map[t];
-      const names = { shirt: "Shirt", shoes: "Shoes", pants: "Pants" };
-      if (!player.clothing[piece]) {
-        player.clothing[piece] = true;
-        toast("Found your " + names[piece] + "! (−15% ticklishness)", 2200);
-        beep(520, 0.1);
-      } else {
-        toast("Extra " + names[piece] + " — already wearing that.", 1800);
+      // Any clothing pickup restores the last-lost piece (LIFO).
+      // Full clothing: do nothing — pickup stays on the map.
+      if (isFullyClothed()) {
+        return;
       }
+      const names = { shirt: "Shirt", shoes: "Shoes", pants: "Pants" };
+      const restored = restoreLastLostPiece();
+      if (!restored) return;
+      maze.grid[ty][tx] = TILE.FLOOR;
+      toast("Recovered your " + names[restored] + "! (−15% ticklishness)", 2200);
+      beep(520, 0.1);
       updateHUD();
       spawnPickupFX(tx, ty, "#e040a0");
     }
@@ -801,7 +859,7 @@
     // Trap + succubus with sight → strip ALL instantly (stay alive; GO only on fail resist while nude)
     const hadClothes = clothingCount(player.clothing) > 0;
     if (hadClothes) {
-      player.clothing = { shirt: false, shoes: false, pants: false };
+      stripAllClothing();
       updateHUD();
       toast("All clothing lost to the trap + succubus!", 2200);
     } else {
@@ -988,7 +1046,7 @@
         return;
       }
       if (player.clothing[piece]) {
-        player.clothing[piece] = false;
+        loseClothingPiece(piece);
         toast("You wriggled free — but lost your " + names[piece] + "!", 2600);
       } else {
         // Sensitivity raises ticklishness difficulty only — never game over
@@ -1010,7 +1068,7 @@
       return;
     }
     // Had clothes: strip all, stay alive
-    player.clothing = { shirt: false, shoes: false, pants: false };
+    stripAllClothing();
     updateHUD();
     toast("Failed to resist! All clothing lost in a ticklish flurry!", 2800);
     invulnUntil = performance.now() + 2500;
@@ -1038,19 +1096,123 @@
     beep(110, 0.4, "sawtooth");
   }
 
-  // --- Camera: deadzone + smooth lerp (follow near ~75% toward edge) ---
+  // --- Room-locked camera ---
+  function getRegionAtWorld(wx, wy) {
+    if (!maze || !maze.regionAt) return null;
+    const tx = Math.floor(wx);
+    const ty = Math.floor(wy);
+    if (ty < 0 || tx < 0 || ty >= maze.rows || tx >= maze.cols) return null;
+    let reg = maze.regionAt[ty][tx];
+    if (reg) return reg;
+    // Doorway / edge: search nearby floor for a region (prefer rooms)
+    let best = null;
+    let bestD = 99;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = tx + dx,
+          ny = ty + dy;
+        if (ny < 0 || nx < 0 || ny >= maze.rows || nx >= maze.cols) continue;
+        const r = maze.regionAt[ny][nx];
+        if (!r) continue;
+        const d = Math.abs(dx) + Math.abs(dy);
+        const score = d + (r.kind === "room" ? 0 : 0.25);
+        if (score < bestD) {
+          bestD = score;
+          best = r;
+        }
+      }
+    }
+    return best;
+  }
+
+  function regionIdOf(reg) {
+    if (!reg) return null;
+    return (reg.kind || "room") + ":" + reg.id;
+  }
+
+  /** True if tile is inside the active region or a wall bordering it. */
+  function tileVisibleInRegion(x, y, reg) {
+    if (!reg) return true;
+    if (y < 0 || x < 0 || y >= maze.rows || x >= maze.cols) return false;
+    const here = maze.regionAt[y][x];
+    if (here && here.id === reg.id && here.kind === reg.kind) return true;
+    // Only walls that actually touch this region (never neighboring room floors)
+    if (maze.grid[y][x] === TILE.WALL) {
+      for (const [dx, dy] of [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1]
+      ]) {
+        const nx = x + dx,
+          ny = y + dy;
+        if (ny < 0 || nx < 0 || ny >= maze.rows || nx >= maze.cols) continue;
+        const n = maze.regionAt[ny][nx];
+        if (n && n.id === reg.id && n.kind === reg.kind) return true;
+      }
+    }
+    return false;
+  }
+
+  function clampCameraToRegion(camX, camY, viewW, viewH, reg) {
+    if (!reg) {
+      return {
+        x: Math.max(0, Math.min(Math.max(0, maze.cols - viewW), camX)),
+        y: Math.max(0, Math.min(Math.max(0, maze.rows - viewH), camY))
+      };
+    }
+    // Framing box: region inset slightly so adjacent rooms stay off-screen
+    const left = reg.x - CAM_ROOM_PAD;
+    const top = reg.y - CAM_ROOM_PAD;
+    const right = reg.x + reg.w + CAM_ROOM_PAD;
+    const bottom = reg.y + reg.h + CAM_ROOM_PAD;
+    const rw = right - left;
+    const rh = bottom - top;
+
+    let x = camX;
+    let y = camY;
+    if (viewW >= rw) {
+      x = left + rw / 2 - viewW / 2;
+    } else {
+      const minX = left;
+      const maxX = right - viewW;
+      x = Math.max(minX, Math.min(maxX, x));
+    }
+    if (viewH >= rh) {
+      y = top + rh / 2 - viewH / 2;
+    } else {
+      const minY = top;
+      const maxY = bottom - viewH;
+      y = Math.max(minY, Math.min(maxY, y));
+    }
+    return { x, y };
+  }
+
   function updateCamera(dt) {
     const viewW = canvas.width / CELL;
     const viewH = canvas.height / CELL;
+    const reg = getRegionAtWorld(player.x, player.y);
+    const rid = regionIdOf(reg);
+
     if (!camera.initialized) {
-      camera.x = player.x - viewW / 2;
-      camera.y = player.y - viewH / 2;
+      let cx = player.x - viewW / 2;
+      let cy = player.y - viewH / 2;
+      const clamped = clampCameraToRegion(cx, cy, viewW, viewH, reg);
+      camera.x = clamped.x;
+      camera.y = clamped.y;
+      camera.regionId = rid;
+      camera.transitioning = false;
       camera.initialized = true;
+      return;
+    }
+
+    if (rid !== camera.regionId) {
+      camera.regionId = rid;
+      camera.transitioning = true;
     }
 
     const halfW = viewW / 2;
     const halfH = viewH / 2;
-    // Distance from center at which follow begins (3/4 toward edge)
     const deadW = halfW * CAM_EDGE_FOLLOW;
     const deadH = halfH * CAM_EDGE_FOLLOW;
 
@@ -1059,18 +1221,47 @@
     let targetX = camera.x;
     let targetY = camera.y;
 
+    // Soft follow inside the room; near walls the later clamp stops peeking
     if (screenX > halfW + deadW) targetX = player.x - (halfW + deadW);
     else if (screenX < halfW - deadW) targetX = player.x - (halfW - deadW);
 
     if (screenY > halfH + deadH) targetY = player.y - (halfH + deadH);
     else if (screenY < halfH - deadH) targetY = player.y - (halfH - deadH);
 
-    const k = 1 - Math.exp(-CAM_LERP * dt);
+    // When the region is smaller than the view, keep framed on the region center
+    // but bias slightly toward the player for a living follow feel
+    if (reg) {
+      const rw = reg.w + CAM_ROOM_PAD * 2;
+      const rh = reg.h + CAM_ROOM_PAD * 2;
+      if (viewW >= rw) {
+        targetX = reg.x + reg.w / 2 - viewW / 2 + (player.x - (reg.x + reg.w / 2)) * 0.15;
+      }
+      if (viewH >= rh) {
+        targetY = reg.y + reg.h / 2 - viewH / 2 + (player.y - (reg.y + reg.h / 2)) * 0.15;
+      }
+    }
+
+    const clampedTarget = clampCameraToRegion(targetX, targetY, viewW, viewH, reg);
+    targetX = clampedTarget.x;
+    targetY = clampedTarget.y;
+
+    const lerpRate = camera.transitioning ? CAM_ROOM_TRANSITION : CAM_LERP;
+    const k = 1 - Math.exp(-lerpRate * dt);
     camera.x += (targetX - camera.x) * k;
     camera.y += (targetY - camera.y) * k;
 
-    camera.x = Math.max(0, Math.min(Math.max(0, maze.cols - viewW), camera.x));
-    camera.y = Math.max(0, Math.min(Math.max(0, maze.rows - viewH), camera.y));
+    const hard = clampCameraToRegion(camera.x, camera.y, viewW, viewH, reg);
+    // Softly pull toward hard clamp (avoids peeking during transition)
+    camera.x += (hard.x - camera.x) * Math.min(1, k * 1.4);
+    camera.y += (hard.y - camera.y) * Math.min(1, k * 1.4);
+
+    if (
+      camera.transitioning &&
+      Math.abs(camera.x - targetX) < 0.04 &&
+      Math.abs(camera.y - targetY) < 0.04
+    ) {
+      camera.transitioning = false;
+    }
   }
 
   // --- Rendering ---
@@ -1086,6 +1277,8 @@
 
     torchFlicker = 0.85 + Math.sin(animTime * 6) * 0.08 + Math.sin(animTime * 13) * 0.04;
 
+    const camRegion = getRegionAtWorld(player.x, player.y);
+
     const x0 = Math.max(0, Math.floor(camera.x) - 1);
     const y0 = Math.max(0, Math.floor(camera.y) - 1);
     const x1 = Math.min(maze.cols - 1, Math.ceil(camera.x + viewW) + 1);
@@ -1093,6 +1286,8 @@
 
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
+        // Room-lock: void outside current room/corridor (no peeking into neighbors)
+        if (!tileVisibleInRegion(x, y, camRegion)) continue;
         const sx = (x - camera.x) * CELL;
         const sy = (y - camera.y) * CELL;
         const t = maze.grid[y][x];
@@ -1246,6 +1441,7 @@
     // Manor decorations (rugs / furniture) — walkable, drawn on open floor
     if (maze.decorations) {
       for (const d of maze.decorations) {
+        if (!tileVisibleInRegion(d.x, d.y, camRegion)) continue;
         if (d.type === "rug") {
           const sx = (d.x - camera.x) * CELL;
           const sy = (d.y - camera.y) * CELL;
@@ -1294,6 +1490,7 @@
 
     if (maze.torches) {
       for (const t of maze.torches) {
+        if (!tileVisibleInRegion(t.x, t.y, camRegion)) continue;
         const sx = (t.x - camera.x) * CELL;
         const sy = (t.y - camera.y) * CELL;
         if (sx < -CELL || sy < -CELL || sx > canvas.width + CELL || sy > canvas.height + CELL)
@@ -1313,6 +1510,7 @@
     }
 
     for (const e of enemies) {
+      if (!tileVisibleInRegion(Math.floor(e.x), Math.floor(e.y), camRegion)) continue;
       // Hide minions that are about to despawn (fade)
       let alpha = 1;
       if (e.kind === "minion" && e.fleeing && e.despawnAt) {
@@ -1393,6 +1591,7 @@
 
     if (maze.torches) {
       for (const t of maze.torches) {
+        if (!tileVisibleInRegion(t.x, t.y, camRegion)) continue;
         const tx = (t.x + 0.5 - camera.x) * CELL;
         const ty = (t.y + 0.35 - camera.y) * CELL;
         const rad = TORCH_RADIUS * CELL * (0.9 + (torchFlicker - 0.85) * 0.6);
@@ -1440,6 +1639,7 @@
     ctx.globalCompositeOperation = "lighter";
     if (maze.torches) {
       for (const t of maze.torches) {
+        if (!tileVisibleInRegion(t.x, t.y, camRegion)) continue;
         const tx = (t.x + 0.5 - camera.x) * CELL;
         const ty = (t.y + 0.35 - camera.y) * CELL;
         const rad = TORCH_RADIUS * CELL * 0.85 * torchFlicker;
