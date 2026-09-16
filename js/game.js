@@ -1460,8 +1460,8 @@
         } else if (d.type === "furniture") {
           const sx = (d.x - camera.x) * CELL;
           const sy = (d.y - camera.y) * CELL;
-          const fw = d.w * CELL;
-          const fh = d.h * CELL;
+          const fw = (d.w || 1) * CELL;
+          const fh = (d.h || 1) * CELL;
           if (sx + fw < -4 || sy + fh < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
             continue;
           // Soft silhouette against the wall — does not block (floor tile stays walkable)
@@ -1483,6 +1483,64 @@
             ctx.beginPath();
             ctx.ellipse(sx + fw / 2, sy + fh / 2, Math.min(fw, fh) * 0.28, Math.min(fw, fh) * 0.35, 0, 0, Math.PI * 2);
             ctx.fill();
+          }
+        } else if (d.type === "banner") {
+          const sx = (d.x - camera.x) * CELL;
+          const sy = (d.y - camera.y) * CELL;
+          const bw = (d.w || 1) * CELL;
+          const bh = (d.h || 2) * CELL;
+          if (sx + bw < -4 || sy + bh < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
+            continue;
+          // Red drape hanging on wall — non-blocking
+          ctx.fillStyle = "rgba(140, 25, 45, 0.85)";
+          ctx.fillRect(sx + 4, sy + 2, bw - 8, bh - 4);
+          ctx.fillStyle = "rgba(190, 40, 60, 0.55)";
+          ctx.fillRect(sx + 6, sy + 4, bw - 12, bh - 10);
+          ctx.strokeStyle = "rgba(255, 180, 120, 0.35)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sx + bw / 2, sy + 2);
+          ctx.lineTo(sx + bw / 2, sy + bh - 4);
+          ctx.stroke();
+          // Rod
+          ctx.fillStyle = "rgba(200, 160, 80, 0.7)";
+          ctx.fillRect(sx + 2, sy + 1, bw - 4, 3);
+        } else if (d.type === "cobweb") {
+          const sx = (d.x - camera.x) * CELL;
+          const sy = (d.y - camera.y) * CELL;
+          if (sx < -CELL || sy < -CELL || sx > canvas.width + CELL || sy > canvas.height + CELL)
+            continue;
+          ctx.strokeStyle = "rgba(200, 195, 210, 0.28)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sx + 4, sy + 4);
+          ctx.lineTo(sx + CELL - 6, sy + 10);
+          ctx.moveTo(sx + 6, sy + 4);
+          ctx.lineTo(sx + 10, sy + CELL - 8);
+          ctx.moveTo(sx + 4, sy + 12);
+          ctx.lineTo(sx + CELL - 8, sy + 6);
+          ctx.moveTo(sx + CELL / 2, sy + 4);
+          ctx.lineTo(sx + 8, sy + CELL / 2);
+          ctx.stroke();
+          ctx.fillStyle = "rgba(220, 215, 230, 0.15)";
+          ctx.beginPath();
+          ctx.arc(sx + 8, sy + 8, 3, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (d.type === "stairs") {
+          const sx = (d.x - camera.x) * CELL;
+          const sy = (d.y - camera.y) * CELL;
+          const sw = (d.w || 3) * CELL;
+          const sh = (d.h || 2) * CELL;
+          if (sx + sw < -4 || sy + sh < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
+            continue;
+          const steps = 4;
+          for (let si = 0; si < steps; si++) {
+            const t = si / steps;
+            ctx.fillStyle = si % 2 === 0 ? "rgba(90, 75, 70, 0.55)" : "rgba(70, 58, 55, 0.5)";
+            const yy = sy + t * sh;
+            ctx.fillRect(sx + 2, yy, sw - 4, sh / steps + 1);
+            ctx.strokeStyle = "rgba(160, 140, 120, 0.35)";
+            ctx.strokeRect(sx + 2, yy, sw - 4, sh / steps);
           }
         }
       }

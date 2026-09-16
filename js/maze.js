@@ -142,7 +142,430 @@ window.MazeGen = (function () {
     }
   }
 
+  function roomByName(rooms, name) {
+    return rooms.find((r) => r.name === name);
+  }
+
+  /**
+   * Build mansion from a handcrafted layout (Level 1 art map).
+   * Same return shape as procedural generate().
+   */
+  function generateHandcrafted(layout, seed, level) {
+    const rng = mulberry32(seed >>> 0);
+    const cols = layout.cols;
+    const rows = layout.rows;
+    const grid = Array.from({ length: rows }, () => Array(cols).fill(TILE.WALL));
+
+    const rooms = layout.rooms.map((r) => ({
+      x: r.x,
+      y: r.y,
+      w: r.w,
+      h: r.h,
+      name: r.name
+    }));
+
+    for (const r of rooms) carveRect(grid, r.x, r.y, r.w, r.h);
+
+    // Soften central hub toward octagon (cut outer corners)
+    if (layout.hubOctagon) {
+      const hub = roomByName(rooms, layout.hubName || "hub");
+      if (hub) {
+        const corners = [
+          [hub.x, hub.y],
+          [hub.x + hub.w - 1, hub.y],
+          [hub.x, hub.y + hub.h - 1],
+          [hub.x + hub.w - 1, hub.y + hub.h - 1],
+          [hub.x + 1, hub.y],
+          [hub.x, hub.y + 1],
+          [hub.x + hub.w - 2, hub.y],
+          [hub.x + hub.w - 1, hub.y + 1],
+          [hub.x + 1, hub.y + hub.h - 1],
+          [hub.x, hub.y + hub.h - 2],
+          [hub.x + hub.w - 2, hub.y + hub.h - 1],
+          [hub.x + hub.w - 1, hub.y + hub.h - 2]
+        ];
+        for (const [cx, cy] of corners) {
+          if (cy > 0 && cx > 0 && cy < rows - 1 && cx < cols - 1) {
+            grid[cy][cx] = TILE.WALL;
+          }
+        }
+      }
+    }
+
+    for (const [aName, bName] of layout.connections) {
+      const a = roomByName(rooms, aName);
+      const b = roomByName(rooms, bName);
+      if (a && b) carveConnection(grid, a, b, rng);
+    }
+
+    const decorations = (layout.decorations || []).map((d) => Object.assign({}, d));
+
+    // Light corner pillars in larger rooms (solid) — skip vestibule/gate
+    for (const r of rooms) {
+      if (r.name === "vestibule" || r.name === "gate") continue;
+      if (r.w < 7 || r.h < 6) continue;
+      const corners = [
+        { x: r.x + 1, y: r.y + 1 },
+        { x: r.x + r.w - 2, y: r.y + 1 },
+        { x: r.x + 1, y: r.y + r.h - 2 },
+        { x: r.x + r.w - 2, y: r.y + r.h - 2 }
+      ];
+      for (const c of corners) {
+        if (rng() < 0.4 && grid[c.y] && grid[c.y][c.x] === TILE.FLOOR) {
+          // Don't pillar over EXIT/start
+          if (c.x === layout.start.x && c.y === layout.start.y) continue;
+          if (c.x === layout.exit.x && c.y === layout.exit.y) continue;
+          grid[c.y][c.x] = TILE.WALL;
+          decorations.push({ type: "pillar", x: c.x, y: c.y });
+        }
+      }
+    }
+
+    // Ensure start/exit cells are floor then mark EXIT
+    const start = { x: layout.start.x, y: layout.start.y };
+    const exitCell = { x: layout.exit.x, y: layout.exit.y };
+    grid[start.y][start.x] = TILE.FLOOR;
+    grid[exitCell.y][exitCell.x] = TILE.EXIT;
+
+    const startRoom = roomByName(rooms, "vestibule") || rooms[0];
+    const exitRoom = roomByName(rooms, "gate") || rooms[rooms.length - 1];
+
+    return finalizeMansion({
+      grid,
+      cols,
+      rows,
+      rooms,
+      start,
+      exitCell,
+      startRoom,
+      exitRoom,
+      decorations,
+      rng,
+      level,
+      presetTraps: layout.traps || [],
+      seed,
+      maxTraps: 1, // handcrafted L1: 0–1 subtle trap if any room free
+      handcrafted: true
+    });
+  }
+
+  /**
+   * Shared post-process: floors list, traps/keys/pickups/enemies, torches, regions.
+   */
+  function finalizeMansion(opts) {
+    const {
+      grid,
+      cols,
+      rows,
+      rooms,
+      start,
+      exitCell,
+      startRoom,
+      exitRoom,
+      decorations,
+      rng,
+      level,
+      seed
+    } = opts;
+    const presetTraps = opts.presetTraps || null;
+    const maxTraps = opts.maxTraps == null ? null : opts.maxTraps;
+
+    const floors = [];
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (grid[y][x] === TILE.FLOOR) floors.push({ x, y });
+      }
+    }
+
+    function takeFarFrom(px, py, minDist) {
+      const candidates = floors.filter((c) => {
+        const d = Math.abs(c.x - px) + Math.abs(c.y - py);
+        return d >= minDist;
+      });
+      const pool = candidates.length ? candidates : floors.slice();
+      if (!pool.length) return null;
+      const i = Math.floor(rng() * pool.length);
+      const picked = pool[i];
+      for (let fi = floors.length - 1; fi >= 0; fi--) {
+        if (floors[fi].x === picked.x && floors[fi].y === picked.y) {
+          floors.splice(fi, 1);
+          break;
+        }
+      }
+      return picked;
+    }
+
+    function takeInRoom(room, avoidStart, minDist) {
+      const pool = [];
+      for (let i = floors.length - 1; i >= 0; i--) {
+        const c = floors[i];
+        if (!inRoom(room, c.x, c.y)) continue;
+        if (c.x <= room.x || c.x >= room.x + room.w - 1) continue;
+        if (c.y <= room.y || c.y >= room.y + room.h - 1) continue;
+        const d = Math.abs(c.x - avoidStart.x) + Math.abs(c.y - avoidStart.y);
+        if (d < minDist) continue;
+        pool.push({ c, i });
+      }
+      if (!pool.length) return null;
+      const pick = pool[Math.floor(rng() * pool.length)];
+      floors.splice(pick.i, 1);
+      return pick.c;
+    }
+
+    // Remove start from floors pool
+    for (let i = floors.length - 1; i >= 0; i--) {
+      if (floors[i].x === start.x && floors[i].y === start.y) floors.splice(i, 1);
+    }
+    // Exit is EXIT tile — remove from floors if still listed
+    for (let i = floors.length - 1; i >= 0; i--) {
+      if (floors[i].x === exitCell.x && floors[i].y === exitCell.y) floors.splice(i, 1);
+    }
+
+    const traps = [];
+    if (presetTraps && presetTraps.length) {
+      for (const t of presetTraps) {
+        if (grid[t.y] && grid[t.y][t.x] === TILE.FLOOR) {
+          grid[t.y][t.x] = TILE.TRAP;
+          traps.push({ x: t.x, y: t.y });
+          for (let i = floors.length - 1; i >= 0; i--) {
+            if (floors[i].x === t.x && floors[i].y === t.y) floors.splice(i, 1);
+          }
+        }
+      }
+    } else if (maxTraps === 0) {
+      // no traps
+    } else if (maxTraps != null) {
+      // Cap traps (handcrafted L1)
+      const n = Math.min(maxTraps, Math.floor(rng() * (maxTraps + 1)));
+      for (let ti = 0; ti < n; ti++) {
+        const nonStart = rooms.filter((r) => r !== startRoom && r !== exitRoom);
+        if (!nonStart.length) break;
+        const pr = nonStart[Math.floor(rng() * nonStart.length)];
+        const t = takeInRoom(pr, start, 6);
+        if (!t) break;
+        grid[t.y][t.x] = TILE.TRAP;
+        traps.push(t);
+      }
+    } else {
+      // Procedural trap density
+      const trapRoomChance = Math.min(0.75, 0.38 + level * 0.06);
+      const trapsPerRoom = 1 + (level >= 4 ? 1 : 0);
+      for (let ri = 0; ri < rooms.length; ri++) {
+        const r = rooms[ri];
+        if (r === startRoom) continue;
+        if (rng() > trapRoomChance) continue;
+        for (let ti = 0; ti < trapsPerRoom; ti++) {
+          const t = takeInRoom(r, start, 5);
+          if (!t) break;
+          if (t.x === exitCell.x && t.y === exitCell.y) continue;
+          grid[t.y][t.x] = TILE.TRAP;
+          traps.push(t);
+        }
+      }
+    }
+
+    let potion = null;
+    const potionRooms = rooms.filter((r) => r !== startRoom);
+    if (potionRooms.length) {
+      const pr = potionRooms[Math.floor(rng() * potionRooms.length)];
+      potion = takeInRoom(pr, start, 6);
+    }
+    if (!potion) potion = takeFarFrom(start.x, start.y, 8);
+    if (potion) grid[potion.y][potion.x] = TILE.POTION;
+
+    const clothTiles = [TILE.CLOTH_SHIRT, TILE.CLOTH_SHOES, TILE.CLOTH_PANTS];
+    const clothPickups = [];
+    for (const ct of clothTiles) {
+      const nonStart = rooms.filter((r) => r !== startRoom);
+      let c = null;
+      if (nonStart.length) {
+        const pr = nonStart[Math.floor(rng() * nonStart.length)];
+        c = takeInRoom(pr, start, 5);
+      }
+      if (!c) c = takeFarFrom(start.x, start.y, 6);
+      if (!c) break;
+      grid[c.y][c.x] = ct;
+      clothPickups.push({ x: c.x, y: c.y, tile: ct });
+    }
+
+    const keyCount = Math.min(5, KEYS_REQUIRED + Math.min(Math.max(level, 1) - 1, 2));
+    const keyPickups = [];
+    for (let ki = 0; ki < keyCount; ki++) {
+      const nonStart = rooms.filter((r) => r !== startRoom && r !== exitRoom);
+      const poolRooms = nonStart.length ? nonStart : rooms.filter((r) => r !== startRoom);
+      let k = null;
+      if (poolRooms.length) {
+        const pr = poolRooms[Math.floor(rng() * poolRooms.length)];
+        k = takeInRoom(pr, start, 4);
+      }
+      if (!k) k = takeFarFrom(start.x, start.y, 6);
+      if (!k) break;
+      if (k.x === exitCell.x && k.y === exitCell.y) continue;
+      grid[k.y][k.x] = TILE.KEY;
+      keyPickups.push({ x: k.x, y: k.y });
+    }
+
+    const enemySpawns = [];
+    const minionCount = 2 + level;
+    for (let i = 0; i < minionCount + 1; i++) {
+      const nonStart = rooms.filter((r) => r !== startRoom);
+      let e = null;
+      if (nonStart.length) {
+        const pr = nonStart[Math.floor(rng() * nonStart.length)];
+        e = takeInRoom(pr, start, 8);
+      }
+      if (!e) e = takeFarFrom(start.x, start.y, 10);
+      if (!e) break;
+      enemySpawns.push(e);
+    }
+
+    const torches = [];
+    const torchTarget = 10 + level * 2;
+    const torchCandidates = [];
+    for (let y = 1; y < rows - 1; y++) {
+      for (let x = 1; x < cols - 1; x++) {
+        if (grid[y][x] !== TILE.FLOOR) continue;
+        let wallN = 0;
+        for (const [dx, dy] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1]
+        ]) {
+          if (grid[y + dy][x + dx] === TILE.WALL) wallN++;
+        }
+        if (wallN >= 1) torchCandidates.push({ x, y });
+      }
+    }
+    for (let i = torchCandidates.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [torchCandidates[i], torchCandidates[j]] = [torchCandidates[j], torchCandidates[i]];
+    }
+    for (const c of torchCandidates) {
+      if (torches.length >= torchTarget) break;
+      let ok = true;
+      for (const t of torches) {
+        if (Math.abs(t.x - c.x) + Math.abs(t.y - c.y) < 5) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+      torches.push({ x: c.x, y: c.y });
+      decorations.push({ type: "sconce", x: c.x, y: c.y });
+    }
+
+    function roomIndexAt(x, y) {
+      for (let i = 0; i < rooms.length; i++) {
+        if (inRoom(rooms[i], x, y)) return i;
+      }
+      return -1;
+    }
+
+    const corridors = [];
+    const seenHall = Array.from({ length: rows }, () => Array(cols).fill(false));
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        if (grid[y][x] === TILE.WALL) continue;
+        if (roomIndexAt(x, y) >= 0) continue;
+        if (seenHall[y][x]) continue;
+        const cells = [];
+        const stack = [[x, y]];
+        seenHall[y][x] = true;
+        let minX = x,
+          maxX = x,
+          minY = y,
+          maxY = y;
+        while (stack.length) {
+          const [cx, cy] = stack.pop();
+          cells.push({ x: cx, y: cy });
+          if (cx < minX) minX = cx;
+          if (cx > maxX) maxX = cx;
+          if (cy < minY) minY = cy;
+          if (cy > maxY) maxY = cy;
+          for (const [dx, dy] of [
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1]
+          ]) {
+            const nx = cx + dx,
+              ny = cy + dy;
+            if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+            if (seenHall[ny][nx]) continue;
+            if (grid[ny][nx] === TILE.WALL) continue;
+            if (roomIndexAt(nx, ny) >= 0) continue;
+            seenHall[ny][nx] = true;
+            stack.push([nx, ny]);
+          }
+        }
+        corridors.push({
+          kind: "corridor",
+          x: minX,
+          y: minY,
+          w: maxX - minX + 1,
+          h: maxY - minY + 1,
+          cells
+        });
+      }
+    }
+
+    const regionAt = Array.from({ length: rows }, () => Array(cols).fill(null));
+    for (let i = 0; i < rooms.length; i++) {
+      const r = rooms[i];
+      r.kind = "room";
+      r.id = i;
+      for (let y = r.y; y < r.y + r.h; y++) {
+        for (let x = r.x; x < r.x + r.w; x++) {
+          if (y < 0 || x < 0 || y >= rows || x >= cols) continue;
+          if (grid[y][x] === TILE.WALL) continue;
+          regionAt[y][x] = r;
+        }
+      }
+    }
+    for (let i = 0; i < corridors.length; i++) {
+      const c = corridors[i];
+      c.id = rooms.length + i;
+      for (const cell of c.cells) {
+        regionAt[cell.y][cell.x] = c;
+      }
+    }
+
+    const regions = rooms.concat(corridors);
+
+    return {
+      cols,
+      rows,
+      grid,
+      start,
+      exit: exitCell,
+      traps,
+      potion,
+      clothPickups,
+      keyPickups,
+      keysRequired: KEYS_REQUIRED,
+      keysPlaced: keyPickups.length,
+      enemySpawns,
+      torches,
+      decorations,
+      rooms,
+      corridors,
+      regions,
+      regionAt,
+      seed,
+      TILE,
+      handcrafted: !!opts.handcrafted
+    };
+  }
+
   function generate(cols, rows, seed, level) {
+    // Level 1: handcrafted mansion from maps/level-01.jpg art
+    if (level === 1 && typeof window !== "undefined" && window.Level01) {
+      const built = generateHandcrafted(window.Level01, seed, level);
+      built.handcrafted = true;
+      return built;
+    }
+
     const rng = mulberry32(seed >>> 0);
     const grid = Array.from({ length: rows }, () => Array(cols).fill(TILE.WALL));
 
