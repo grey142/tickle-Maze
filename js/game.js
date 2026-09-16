@@ -1,21 +1,41 @@
 /**
- * Cave Tickle Maze — main game engine (Canvas 2D)
+ * Tickle Maze — underground mansion engine (Canvas 2D)
  */
 (function () {
   "use strict";
 
   const TILE = window.MazeGen.TILE;
   const CELL = 28;
-  const COLS = 25;
-  const ROWS = 19;
+  // Large mansion — camera frames a window into it
+  const COLS = 48;
+  const ROWS = 36;
+
+  // Speeds: walk < succubus chase < sprint
+  const PLAYER_WALK = 2.45;
+  const PLAYER_SPRINT = 4.35;
+  const SUCC_WANDER = 2.05;
+  const SUCC_CHASE = SUCC_WANDER * 1.35; // ~2.77 — faster than walk, slower than sprint
+  const MINION_SPEED = 1.9;
+
+  const STAMINA_MAX = 100;
+  const STAMINA_DRAIN = 32; // /sec while sprinting
+  const STAMINA_REGEN = 16; // /sec when not
 
   // Flashlight / lighting
-  const FLASH_RANGE = 5.8;          // tiles
-  const FLASH_CONE_DEG = 60;        // full cone angle
+  const FLASH_RANGE = 5.8;
+  const FLASH_CONE_DEG = 60;
   const FLASH_HALF = (FLASH_CONE_DEG * Math.PI) / 180 / 2;
   const FLASH_COS = Math.cos(FLASH_HALF);
-  const AMBIENT_DARK = 0.72;        // overlay opacity (cave stays visible but dim)
-  const TORCH_RADIUS = 3.2;         // tiles
+  const AMBIENT_DARK = 0.72;
+  const TORCH_RADIUS = 3.2;
+
+  // Camera deadzone: follow starts ~3/4 from center toward frame edge
+  const CAM_EDGE_FOLLOW = 0.75;
+  const CAM_LERP = 7.5;
+
+  // Succubus sight
+  const SUCC_LOS_RANGE = 11;
+  const SUCC_HEAR_RANGE = 14;
 
   // --- DOM ---
   const $ = (id) => document.getElementById(id);
@@ -23,8 +43,6 @@
   const ctx = canvas.getContext("2d");
   const cineCanvas = $("cine-canvas");
   const cineCtx = cineCanvas.getContext("2d");
-  // Offscreen lighting layer (dark + punched lights) so destination-out
-  // never erases the maze itself
   const lightCanvas = document.createElement("canvas");
   lightCanvas.width = canvas.width;
   lightCanvas.height = canvas.height;
@@ -37,7 +55,7 @@
   let maze = null;
   let player = null;
   let enemies = [];
-  let mode = "title"; // title | play | cinematic | pause | win | gameover
+  let mode = "title";
   let invulnUntil = 0;
   let keys = Object.create(null);
   let lastTs = 0;
@@ -45,10 +63,11 @@
   let particles = [];
   let torchFlicker = 0;
   let resistState = null;
-  let camera = { x: 0, y: 0 };
+  let camera = { x: 0, y: 0, initialized: false };
   let animTime = 0;
-  let pickupFlash = [];
   let floatTexts = [];
+  let heartbeat = { next: 0, gain: null, osc: null };
+  let succubusRef = null;
 
   function defaultClothing() {
     return { shirt: true, shoes: true, pants: true };
@@ -59,28 +78,83 @@
   }
 
   function computeTicklishnessPct() {
-    // Display & difficulty: sensitivity-driven + base, minus 15% per clothing piece
-    const base = 20 + player.sensitivity * 0.8; // 20–100 as sens fills
+    const base = 20 + player.sensitivity * 0.8;
     const reduced = base - clothingCount(player.clothing) * 15;
     return Math.max(0, Math.min(100, Math.round(reduced)));
   }
 
-  // --- Audio (tiny beeps via WebAudio, optional) ---
+  // --- Audio ---
   let audioCtx = null;
+  function ensureAudio() {
+    if (!audioCtx) {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      } catch (_) {}
+    }
+    return audioCtx;
+  }
+
   function beep(freq, dur, type) {
     if (muted) return;
     try {
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const o = audioCtx.createOscillator();
-      const g = audioCtx.createGain();
+      const ac = ensureAudio();
+      if (!ac) return;
+      const o = ac.createOscillator();
+      const g = ac.createGain();
       o.type = type || "sine";
       o.frequency.value = freq;
       g.gain.value = 0.04;
-      o.connect(g); g.connect(audioCtx.destination);
+      o.connect(g);
+      g.connect(ac.destination);
       o.start();
-      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
-      o.stop(audioCtx.currentTime + dur);
+      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + dur);
+      o.stop(ac.currentTime + dur);
     } catch (_) {}
+  }
+
+  /** Soft heartbeat thump — volume scales with proximity (0–1). */
+  function playHeartbeat(intensity) {
+    if (muted || intensity < 0.05) return;
+    try {
+      const ac = ensureAudio();
+      if (!ac) return;
+      const now = ac.currentTime;
+      const vol = 0.02 + intensity * 0.14;
+
+      function thump(delay, freq) {
+        const o = ac.createOscillator();
+        const g = ac.createGain();
+        o.type = "sine";
+        o.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, now + delay);
+        g.gain.exponentialRampToValueAtTime(vol, now + delay + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + delay + 0.16);
+        o.connect(g);
+        g.connect(ac.destination);
+        o.start(now + delay);
+        o.stop(now + delay + 0.18);
+      }
+      thump(0, 55);
+      thump(0.12, 48);
+    } catch (_) {}
+  }
+
+  function updateHeartbeat(dt) {
+    if (mode !== "play" || !succubusRef || !player) return;
+    const dist = Math.hypot(player.x - succubusRef.x, player.y - succubusRef.y);
+    if (dist > SUCC_HEAR_RANGE) {
+      heartbeat.next = Math.max(heartbeat.next, 0.4);
+      return;
+    }
+    // Closer → louder & faster
+    const t = 1 - dist / SUCC_HEAR_RANGE;
+    const intensity = Math.pow(t, 1.35);
+    const interval = 1.15 - intensity * 0.7; // 1.15s → ~0.45s
+    heartbeat.next -= dt;
+    if (heartbeat.next <= 0) {
+      playHeartbeat(intensity);
+      heartbeat.next = Math.max(0.35, interval);
+    }
   }
 
   // --- UI helpers ---
@@ -115,6 +189,8 @@
     $("tickle-pct").textContent = tick + "%";
     $("sens-fill").style.width = player.sensitivity + "%";
     $("sens-pct").textContent = Math.round(player.sensitivity) + "%";
+    $("stamina-fill").style.width = player.stamina + "%";
+    $("stamina-pct").textContent = Math.round(player.stamina) + "%";
     $("level-label").textContent = "Level " + level;
   }
 
@@ -130,60 +206,73 @@
     player = {
       x: maze.start.x + 0.5,
       y: maze.start.y + 0.5,
-      speed: 3.6,
+      speed: PLAYER_WALK,
       clothing: defaultClothing(),
       sensitivity: 0,
-      facing: 0,          // radians (atan2), flashlight direction
+      facing: 0,
       facingDx: 1,
-      facingDy: 0
+      facingDy: 0,
+      stamina: STAMINA_MAX,
+      sprinting: false
     };
     enemies = [];
-    // First spawn = succubus, rest = minions
+    succubusRef = null;
     maze.enemySpawns.forEach((s, i) => {
-      enemies.push({
+      const isSucc = i === 0;
+      const e = {
         x: s.x + 0.5,
         y: s.y + 0.5,
-        kind: i === 0 ? "succubus" : "minion",
-        speed: i === 0 ? 2.35 : 1.85,
-        awareness: i === 0 ? 9 : 5.5,
+        kind: isSucc ? "succubus" : "minion",
+        speed: isSucc ? SUCC_WANDER : MINION_SPEED,
+        wanderSpeed: isSucc ? SUCC_WANDER : MINION_SPEED,
+        chaseSpeed: isSucc ? SUCC_CHASE : MINION_SPEED * 1.15,
+        awareness: isSucc ? SUCC_LOS_RANGE : 5.5,
         pathTimer: 0,
         path: [],
         anim: Math.random() * Math.PI * 2,
         scared: false,
         fleeUntil: 0,
-        flankBias: i === 0 ? (Math.random() < 0.5 ? 1 : -1) : 0
-      });
+        fleeing: false,
+        despawnAt: 0,
+        hasSight: false,
+        chasing: false,
+        wanderTarget: null
+      };
+      enemies.push(e);
+      if (isSucc) succubusRef = e;
     });
     particles = [];
-    pickupFlash = [];
     floatTexts = [];
     invulnUntil = 0;
+    camera.initialized = false;
+    heartbeat.next = 0.5;
     updateHUD();
   }
 
   function startGame(fresh) {
     level = 1;
     if (fresh) levelSeed = (Math.random() * 1e9) >>> 0;
-    buildLevel(true); // use current levelSeed (just set if fresh)
+    buildLevel(true);
     mode = "play";
     showScreen("game-screen");
     showOverlay("cinematic", false);
     showOverlay("pause-overlay", false);
     showOverlay("win-overlay", false);
     showOverlay("gameover-overlay", false);
+    ensureAudio();
     beep(440, 0.08);
-    toast("Find the glowing EXIT… and try not to giggle!", 2800);
+    toast("Find the glowing EXIT in the underground mansion…", 2800);
   }
 
   function restartSameLevel() {
-    buildLevel(true); // keep seed
+    buildLevel(true);
     mode = "play";
     showOverlay("gameover-overlay", false);
     showOverlay("win-overlay", false);
     showOverlay("cinematic", false);
     showOverlay("pause-overlay", false);
     showScreen("game-screen");
-    toast("Retry! Same maze — clothes restored, sensitivity cleared.", 2500);
+    toast("Retry! Same mansion — clothes restored, sensitivity cleared.", 2500);
     beep(523, 0.1);
   }
 
@@ -192,38 +281,56 @@
     buildLevel(false);
     mode = "play";
     showOverlay("win-overlay", false);
-    toast("Deeper into the caves… Level " + level, 2200);
+    toast("Deeper into the manor… Level " + level, 2200);
   }
 
   // --- Collision / movement ---
   function isWall(tx, ty) {
     if (tx < 0 || ty < 0 || tx >= maze.cols || ty >= maze.rows) return true;
-    const t = maze.grid[ty][tx];
-    return t === TILE.WALL;
+    return maze.grid[ty][tx] === TILE.WALL;
   }
 
   function tryMove(ent, dx, dy, dt, speed) {
     const nx = ent.x + dx * speed * dt;
     const ny = ent.y + dy * speed * dt;
     const r = 0.28;
-    // Axis-separated collision for fairness
-    let x = ent.x, y = ent.y;
-    if (!isWall(Math.floor(nx - r), Math.floor(ent.y - r)) &&
-        !isWall(Math.floor(nx + r), Math.floor(ent.y - r)) &&
-        !isWall(Math.floor(nx - r), Math.floor(ent.y + r)) &&
-        !isWall(Math.floor(nx + r), Math.floor(ent.y + r))) {
+    let x = ent.x,
+      y = ent.y;
+    if (
+      !isWall(Math.floor(nx - r), Math.floor(ent.y - r)) &&
+      !isWall(Math.floor(nx + r), Math.floor(ent.y - r)) &&
+      !isWall(Math.floor(nx - r), Math.floor(ent.y + r)) &&
+      !isWall(Math.floor(nx + r), Math.floor(ent.y + r))
+    ) {
       x = nx;
     }
-    if (!isWall(Math.floor(x - r), Math.floor(ny - r)) &&
-        !isWall(Math.floor(x + r), Math.floor(ny - r)) &&
-        !isWall(Math.floor(x - r), Math.floor(ny + r)) &&
-        !isWall(Math.floor(x + r), Math.floor(ny + r))) {
+    if (
+      !isWall(Math.floor(x - r), Math.floor(ny - r)) &&
+      !isWall(Math.floor(x + r), Math.floor(ny - r)) &&
+      !isWall(Math.floor(x - r), Math.floor(ny + r)) &&
+      !isWall(Math.floor(x + r), Math.floor(ny + r))
+    ) {
       y = ny;
     }
-    ent.x = x; ent.y = y;
+    ent.x = x;
+    ent.y = y;
   }
 
-  // --- Pathfinding (BFS, tile-based) ---
+  // --- Line of sight (Bresenham through open floors) ---
+  function hasLineOfSight(x0, y0, x1, y1, maxRange) {
+    const dist = Math.hypot(x1 - x0, y1 - y0);
+    if (dist > maxRange) return false;
+    const steps = Math.max(2, Math.ceil(dist * 4));
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const x = x0 + (x1 - x0) * t;
+      const y = y0 + (y1 - y0) * t;
+      if (isWall(Math.floor(x), Math.floor(y))) return false;
+    }
+    return true;
+  }
+
+  // --- Pathfinding ---
   function findPath(sx, sy, gx, gy) {
     const start = { x: Math.floor(sx), y: Math.floor(sy) };
     const goal = { x: Math.floor(gx), y: Math.floor(gy) };
@@ -232,13 +339,23 @@
     const q = [start];
     const came = new Map();
     came.set(key(start.x, start.y), null);
-    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    const dirs = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1]
+    ];
     let found = false;
-    while (q.length) {
+    let guard = 0;
+    while (q.length && guard++ < 4000) {
       const cur = q.shift();
-      if (cur.x === goal.x && cur.y === goal.y) { found = true; break; }
+      if (cur.x === goal.x && cur.y === goal.y) {
+        found = true;
+        break;
+      }
       for (const [dx, dy] of dirs) {
-        const nx = cur.x + dx, ny = cur.y + dy;
+        const nx = cur.x + dx,
+          ny = cur.y + dy;
         if (isWall(nx, ny)) continue;
         const k = key(nx, ny);
         if (came.has(k)) continue;
@@ -257,7 +374,6 @@
     return path.slice(1);
   }
 
-  /** Unit facing + whether an enemy body is inside the flashlight cone (in front). */
   function enemyInFlashlight(e) {
     const dx = e.x - player.x;
     const dy = e.y - player.y;
@@ -266,38 +382,17 @@
     const nx = dx / dist;
     const ny = dy / dist;
     const dot = player.facingDx * nx + player.facingDy * ny;
-    // Must be roughly in front and within cone half-angle
     return dot >= FLASH_COS;
   }
 
-  /** True if enemy is primarily behind the player (rear hemisphere). */
-  function enemyBehindPlayer(e) {
-    const dx = e.x - player.x;
-    const dy = e.y - player.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    const dot = player.facingDx * (dx / dist) + player.facingDy * (dy / dist);
-    return dot < 0;
-  }
-
   function fleeTargetAwayFromPlayer(e) {
-    // Prefer a walkable tile further from the player along the flee vector
     const dx = e.x - player.x;
     const dy = e.y - player.y;
     const len = Math.hypot(dx, dy) || 1;
     let fx = dx / len;
     let fy = dy / len;
-    // Succubus: bias sideways to flank after beam break
-    if (e.kind === "succubus") {
-      const px = -fy * e.flankBias;
-      const py = fx * e.flankBias;
-      fx = fx * 0.55 + px * 0.45;
-      fy = fy * 0.55 + py * 0.45;
-      const fl = Math.hypot(fx, fy) || 1;
-      fx /= fl; fy /= fl;
-    }
-    const steps = e.kind === "succubus" ? 3 : 5;
     let best = null;
-    for (let s = steps; s >= 1; s--) {
+    for (let s = 6; s >= 1; s--) {
       const tx = Math.floor(e.x + fx * s);
       const ty = Math.floor(e.y + fy * s);
       if (!isWall(tx, ty)) {
@@ -306,8 +401,12 @@
       }
     }
     if (!best) {
-      // Try cardinals away from player
-      const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+      const dirs = [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1]
+      ];
       let bestScore = -Infinity;
       for (const [ox, oy] of dirs) {
         const tx = Math.floor(e.x) + ox;
@@ -324,83 +423,150 @@
   }
 
   function spawnScareText(e) {
-    const label = e.kind === "succubus"
-      ? "Succubus hissed and fled!"
-      : "Monster hissed and fled!";
     floatTexts.push({
       x: e.x,
       y: e.y - 0.6,
-      text: label,
-      life: 1.4,
+      text: "Minion fled!",
+      life: 1.2,
       vy: -0.55
     });
     beep(320, 0.08, "triangle");
+  }
+
+  function respawnMinion(e) {
+    const spot = window.MazeGen.randomFloorFar(maze, player.x, player.y, 12);
+    if (!spot) return;
+    e.x = spot.x + 0.5;
+    e.y = spot.y + 0.5;
+    e.scared = false;
+    e.fleeing = false;
+    e.despawnAt = 0;
+    e.path = [];
+    e.pathTimer = 0.3;
+    floatTexts.push({
+      x: e.x,
+      y: e.y - 0.5,
+      text: "…",
+      life: 0.8,
+      vy: -0.3
+    });
   }
 
   function updateEnemies(dt) {
     const now = performance.now();
     for (const e of enemies) {
       e.anim += dt * 4;
-      const dist = Math.hypot(player.x - e.x, player.y - e.y);
-      const beamed = enemyInFlashlight(e);
 
-      // Scare: beam hits enemy → flee (succubus braver / shorter linger)
-      if (beamed) {
-        const wasScared = e.scared;
+      // Minion mid-despawn / respawn
+      if (e.kind === "minion" && e.fleeing && e.despawnAt && now >= e.despawnAt) {
+        respawnMinion(e);
+        continue;
+      }
+
+      const dist = Math.hypot(player.x - e.x, player.y - e.y);
+
+      // --- Succubus: ignore flashlight; LOS chase ---
+      if (e.kind === "succubus") {
+        const sight = hasLineOfSight(e.x, e.y, player.x, player.y, SUCC_LOS_RANGE);
+        e.hasSight = sight;
+        e.chasing = sight;
+        e.speed = sight ? e.chaseSpeed : e.wanderSpeed;
+
+        e.pathTimer -= dt;
+        if (sight) {
+          if (e.pathTimer <= 0) {
+            e.path = findPath(e.x, e.y, player.x, player.y);
+            e.pathTimer = 0.28;
+          }
+        } else {
+          // Aimless wander — quiet & slow
+          if (e.pathTimer <= 0 || !e.path || !e.path.length) {
+            e.pathTimer = 1.4 + Math.random() * 1.2;
+            // Pick a random floor a short ways away
+            const ang = Math.random() * Math.PI * 2;
+            const distW = 3 + Math.random() * 5;
+            let tx = Math.floor(e.x + Math.cos(ang) * distW);
+            let ty = Math.floor(e.y + Math.sin(ang) * distW);
+            if (isWall(tx, ty)) {
+              const dirs = [
+                [1, 0],
+                [-1, 0],
+                [0, 1],
+                [0, -1]
+              ];
+              const d = dirs[Math.floor(Math.random() * 4)];
+              tx = Math.floor(e.x) + d[0] * (1 + Math.floor(Math.random() * 3));
+              ty = Math.floor(e.y) + d[1] * (1 + Math.floor(Math.random() * 3));
+            }
+            if (!isWall(tx, ty)) e.path = findPath(e.x, e.y, tx + 0.5, ty + 0.5);
+            else e.path = [];
+          }
+        }
+
+        if (e.path && e.path.length) {
+          const t = e.path[0];
+          const tx = t.x + 0.5,
+            ty = t.y + 0.5;
+          const dx = tx - e.x,
+            dy = ty - e.y;
+          const len = Math.hypot(dx, dy) || 1;
+          tryMove(e, dx / len, dy / len, dt, e.speed);
+          if (Math.hypot(tx - e.x, ty - e.y) < 0.15) e.path.shift();
+        }
+
+        if (now >= invulnUntil && dist < 0.55) {
+          triggerCatch("succubus");
+          return;
+        }
+        continue;
+      }
+
+      // --- Minions: flashlight scares → flee → despawn → respawn ---
+      const beamed = enemyInFlashlight(e);
+      if (beamed && !e.fleeing) {
         e.scared = true;
-        const linger = e.kind === "succubus" ? 450 : 1100;
-        e.fleeUntil = Math.max(e.fleeUntil, now + linger);
-        if (!wasScared) spawnScareText(e);
-      } else if (e.scared && now >= e.fleeUntil) {
-        e.scared = false;
-        // Succubus may flip flank side when recovering
-        if (e.kind === "succubus") e.flankBias *= -1;
+        e.fleeing = true;
+        e.fleeUntil = now + 900;
+        e.despawnAt = now + 1100;
+        spawnScareText(e);
       }
 
       e.pathTimer -= dt;
 
-      if (e.scared || now < e.fleeUntil) {
-        // Flee away from flashlight / player
+      if (e.fleeing || e.scared) {
         if (e.pathTimer <= 0) {
           const dest = fleeTargetAwayFromPlayer(e);
           if (dest) {
             e.path = findPath(e.x, e.y, dest.x + 0.5, dest.y + 0.5);
             if (!e.path.length) e.path = [dest];
           }
-          e.pathTimer = e.kind === "succubus" ? 0.22 : 0.28;
+          e.pathTimer = 0.22;
         }
-        const fleeSpeed = e.speed * (e.kind === "succubus" ? 1.25 : 1.45);
+        const fleeSpeed = e.wanderSpeed * 1.55;
         if (e.path && e.path.length) {
           const t = e.path[0];
-          const tx = t.x + 0.5, ty = t.y + 0.5;
-          const dx = tx - e.x, dy = ty - e.y;
+          const tx = t.x + 0.5,
+            ty = t.y + 0.5;
+          const dx = tx - e.x,
+            dy = ty - e.y;
           const len = Math.hypot(dx, dy) || 1;
           tryMove(e, dx / len, dy / len, dt, fleeSpeed);
           if (Math.hypot(tx - e.x, ty - e.y) < 0.15) e.path.shift();
         }
-        // While scared / illuminated, cannot grab (flashlight protects the front)
         continue;
       }
 
       if (dist < e.awareness && e.pathTimer <= 0) {
-        // Succubus: slight flank offset when chasing from the side
-        let gx = player.x, gy = player.y;
-        if (e.kind === "succubus" && dist > 1.2) {
-          const ox = -player.facingDy * e.flankBias * 1.5;
-          const oy = player.facingDx * e.flankBias * 1.5;
-          const tx = Math.floor(player.x + ox);
-          const ty = Math.floor(player.y + oy);
-          if (!isWall(tx, ty)) {
-            gx = tx + 0.5;
-            gy = ty + 0.5;
-          }
-        }
-        e.path = findPath(e.x, e.y, gx, gy);
-        e.pathTimer = e.kind === "succubus" ? 0.35 : 0.55;
+        e.path = findPath(e.x, e.y, player.x, player.y);
+        e.pathTimer = 0.5;
       } else if (dist >= e.awareness && e.pathTimer <= 0) {
-        // Wander
         e.pathTimer = 1.2 + Math.random();
-        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        const dirs = [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1]
+        ];
         const d = dirs[Math.floor(Math.random() * 4)];
         const tx = Math.floor(e.x) + d[0];
         const ty = Math.floor(e.y) + d[1];
@@ -408,27 +574,32 @@
       }
       if (e.path && e.path.length) {
         const t = e.path[0];
-        const tx = t.x + 0.5, ty = t.y + 0.5;
-        const dx = tx - e.x, dy = ty - e.y;
+        const tx = t.x + 0.5,
+          ty = t.y + 0.5;
+        const dx = tx - e.x,
+          dy = ty - e.y;
         const len = Math.hypot(dx, dy) || 1;
-        tryMove(e, dx / len, dy / len, dt, e.speed);
+        tryMove(e, dx / len, dy / len, dt, e.wanderSpeed);
         if (Math.hypot(tx - e.x, ty - e.y) < 0.15) e.path.shift();
       }
 
-      // Catch player — rear / out-of-beam approaches still grab
-      // (front beam already handled by scare branch above)
       if (now >= invulnUntil && dist < 0.55) {
-        // Extra safety: if somehow still in beam at contact, scare instead
         if (enemyInFlashlight(e)) {
           e.scared = true;
-          e.fleeUntil = now + (e.kind === "succubus" ? 450 : 1100);
+          e.fleeing = true;
+          e.fleeUntil = now + 900;
+          e.despawnAt = now + 1100;
           spawnScareText(e);
           continue;
         }
-        triggerCatch(e.kind === "succubus" ? "succubus" : "minion");
+        triggerCatch("minion");
         return;
       }
     }
+  }
+
+  function succubusActivelyChasing() {
+    return !!(succubusRef && succubusRef.hasSight && succubusRef.chasing);
   }
 
   // --- Pickups / traps ---
@@ -442,8 +613,12 @@
       return;
     }
     if (t === TILE.TRAP && performance.now() >= invulnUntil) {
-      maze.grid[ty][tx] = TILE.FLOOR; // one-shot
-      triggerCatch("trap");
+      maze.grid[ty][tx] = TILE.FLOOR;
+      if (succubusActivelyChasing()) {
+        triggerComboCatch();
+      } else {
+        triggerCatch("trap");
+      }
       return;
     }
     if (t === TILE.POTION) {
@@ -479,21 +654,71 @@
   function spawnPickupFX(tx, ty, color) {
     for (let i = 0; i < 12; i++) {
       particles.push({
-        x: (tx + 0.5) * CELL, y: (ty + 0.5) * CELL,
-        vx: (Math.random() - 0.5) * 60, vy: (Math.random() - 0.5) * 60,
-        life: 0.6, color
+        x: (tx + 0.5) * CELL,
+        y: (ty + 0.5) * CELL,
+        vx: (Math.random() - 0.5) * 60,
+        vy: (Math.random() - 0.5) * 60,
+        life: 0.6,
+        color
       });
     }
   }
 
   // --- Catch / cinematic / resist ---
+  function triggerComboCatch() {
+    // Trap + succubus with sight → strip ALL instantly
+    if (clothingCount(player.clothing) === 0) {
+      gameOver("Trapped and caught bare — the mansion claims another ticklish explorer!");
+      return;
+    }
+    player.clothing = { shirt: false, shoes: false, pants: false };
+    updateHUD();
+
+    const pick = window.pickScene({ shirt: true, shoes: true, pants: true });
+    const tick = computeTicklishnessPct();
+    const drain = 22 + tick * 0.5;
+    const tapGain = Math.max(2.0, 7.0 - tick * 0.05);
+
+    resistState = {
+      type: pick.type,
+      scene: {
+        title: "Double Trouble!",
+        text:
+          "The trap snares you just as the succubus lunges — four hands and a wicked giggle strip every last scrap in seconds!",
+        captions: [
+          "Trap and mistress together~!",
+          "Clothes? Gone!",
+          "Mash to survive the onslaught!"
+        ]
+      },
+      clothingPiece: pick.clothingPiece,
+      source: "combo",
+      meter: 38,
+      drain,
+      tapGain,
+      captionIdx: 0,
+      captionTimer: 0,
+      success: false,
+      done: false,
+      fullStrip: true
+    };
+
+    mode = "cinematic";
+    $("cine-title").textContent = resistState.scene.title;
+    $("cine-text").textContent = resistState.scene.text;
+    $("cine-caption").textContent = resistState.scene.captions[0];
+    $("resist-fill").style.width = resistState.meter + "%";
+    showOverlay("cinematic", true);
+    drawCinematicArt(pick.type);
+    beep(160, 0.28, "sawtooth");
+    toast("All clothing lost to the trap + succubus!", 2200);
+  }
+
   function triggerCatch(source) {
     const pick = window.pickScene(player.clothing);
     const tick = computeTicklishnessPct();
-    // QTE: fill starts mid; drain faster & tap weaker when ticklish
-    const drain = 18 + tick * 0.45; // % per second
+    const drain = 18 + tick * 0.45;
     const tapGain = Math.max(2.2, 7.5 - tick * 0.045);
-    const needTapsHint = Math.ceil(55 / tapGain);
 
     resistState = {
       type: pick.type,
@@ -506,7 +731,8 @@
       captionIdx: 0,
       captionTimer: 0,
       success: false,
-      done: false
+      done: false,
+      fullStrip: false
     };
 
     mode = "cinematic";
@@ -520,22 +746,20 @@
   }
 
   function drawCinematicArt(type) {
-    const w = cineCanvas.width, h = cineCanvas.height;
+    const w = cineCanvas.width,
+      h = cineCanvas.height;
     cineCtx.clearRect(0, 0, w, h);
-    // Cave bg
     const g = cineCtx.createLinearGradient(0, 0, 0, h);
     g.addColorStop(0, "#1a0c28");
     g.addColorStop(1, "#080410");
     cineCtx.fillStyle = g;
     cineCtx.fillRect(0, 0, w, h);
-    // Torches
     for (let i = 0; i < 5; i++) {
       cineCtx.fillStyle = `rgba(255,154,60,${0.15 + Math.random() * 0.1})`;
       cineCtx.beginPath();
       cineCtx.arc(80 + i * 120, 40, 30 + Math.random() * 10, 0, Math.PI * 2);
       cineCtx.fill();
     }
-    // Simple stylized figures
     function body(x, y, color, scale) {
       cineCtx.fillStyle = color;
       cineCtx.beginPath();
@@ -545,9 +769,7 @@
       cineCtx.ellipse(x, y + 10 * scale, 18 * scale, 22 * scale, 0, 0, Math.PI * 2);
       cineCtx.fill();
     }
-    // Succubus (magenta)
     body(w * 0.72, h * 0.55, "#c040a0", 1.15);
-    // Horns
     cineCtx.strokeStyle = "#ff6bcb";
     cineCtx.lineWidth = 3;
     cineCtx.beginPath();
@@ -556,28 +778,29 @@
     cineCtx.moveTo(w * 0.72 + 10, h * 0.55 - 42);
     cineCtx.quadraticCurveTo(w * 0.72 + 18, h * 0.55 - 70, w * 0.72 + 4, h * 0.55 - 55);
     cineCtx.stroke();
-    // Wings
     cineCtx.fillStyle = "rgba(140,60,180,0.5)";
     cineCtx.beginPath();
     cineCtx.ellipse(w * 0.72 - 40, h * 0.5, 28, 18, -0.5, 0, Math.PI * 2);
     cineCtx.ellipse(w * 0.72 + 40, h * 0.5, 28, 18, 0.5, 0, Math.PI * 2);
     cineCtx.fill();
-
-    // Player (victim)
     body(w * 0.35, h * 0.62, "#7ec8ff", 1);
-    // Tickle sparks
     cineCtx.fillStyle = "#fde047";
     for (let i = 0; i < 18; i++) {
       const sx = w * 0.35 + (Math.random() - 0.5) * 80;
-      const sy = h * (type === "feet" ? 0.82 : type === "belly" ? 0.58 : 0.65) + (Math.random() - 0.5) * 40;
+      const sy =
+        h * (type === "feet" ? 0.82 : type === "belly" ? 0.58 : 0.65) +
+        (Math.random() - 0.5) * 40;
       cineCtx.beginPath();
       cineCtx.arc(sx, sy, 2 + Math.random() * 3, 0, Math.PI * 2);
       cineCtx.fill();
     }
-    // Labels
     cineCtx.fillStyle = "#ff6bcb";
     cineCtx.font = "bold 16px Segoe UI, sans-serif";
-    cineCtx.fillText(type === "feet" ? "✦ FEET ✦" : type === "belly" ? "✦ BELLY / FLANKS ✦" : "✦ TIED DOWN ✦", 24, h - 18);
+    cineCtx.fillText(
+      type === "feet" ? "✦ FEET ✦" : type === "belly" ? "✦ BELLY / FLANKS ✦" : "✦ TIED DOWN ✦",
+      24,
+      h - 18
+    );
   }
 
   function resistTap() {
@@ -601,9 +824,9 @@
     resistState.captionTimer += dt;
     if (resistState.captionTimer > 1.4) {
       resistState.captionTimer = 0;
-      resistState.captionIdx = (resistState.captionIdx + 1) % resistState.scene.captions.length;
+      resistState.captionIdx =
+        (resistState.captionIdx + 1) % resistState.scene.captions.length;
       $("cine-caption").textContent = resistState.scene.captions[resistState.captionIdx];
-      // Refresh art sparks
       drawCinematicArt(resistState.type);
     }
 
@@ -617,14 +840,27 @@
   function finishResist(success) {
     const piece = resistState.clothingPiece;
     const names = { shirt: "Shirt", shoes: "Shoes", pants: "Pants" };
+    const wasCombo = resistState.fullStrip;
     showOverlay("cinematic", false);
 
     if (success) {
+      if (wasCombo) {
+        // Already stripped; escape with invuln (no single-piece path)
+        toast("You thrash free — bare, blushing, but still in the race!", 2600);
+        invulnUntil = performance.now() + 2500;
+        updateHUD();
+        beep(700, 0.12, "triangle");
+        if (player.sensitivity >= 100) {
+          gameOver("Sensitivity maxed out — too ticklish to continue!");
+          return;
+        }
+        mode = "play";
+        return;
+      }
       if (player.clothing[piece]) {
         player.clothing[piece] = false;
         toast("You wriggled free — but lost your " + names[piece] + "!", 2600);
       } else {
-        // Already missing → raise sensitivity (+3% via sensitivity system)
         player.sensitivity = Math.min(100, player.sensitivity + 3);
         toast("Already bare there… sensitivity rises! (+3%)", 2600);
       }
@@ -641,6 +877,11 @@
     }
 
     // Fail resist
+    if (wasCombo) {
+      // Already nude from combo strip → harsh fail
+      gameOver("Caught with nothing left to lose… the giggles win!");
+      return;
+    }
     const hadAny = clothingCount(player.clothing) > 0;
     player.clothing = { shirt: false, shoes: false, pants: false };
     updateHUD();
@@ -657,9 +898,13 @@
   function winLevel() {
     mode = "win";
     $("win-flavor").textContent =
-      "You dash through the glowing exit, half-laughing. The succubus waves coyly from the dark — \"Next time, darling~\" Level " + level + " clear!";
+      "You dash through the glowing exit, half-laughing. The succubus waves coyly from the dark — \"Next time, darling~\" Level " +
+      level +
+      " clear!";
     showOverlay("win-overlay", true);
-    beep(523, 0.1); setTimeout(() => beep(659, 0.1), 100); setTimeout(() => beep(784, 0.2), 200);
+    beep(523, 0.1);
+    setTimeout(() => beep(659, 0.1), 100);
+    setTimeout(() => beep(784, 0.2), 200);
   }
 
   function gameOver(reason) {
@@ -669,19 +914,51 @@
     beep(110, 0.4, "sawtooth");
   }
 
+  // --- Camera: deadzone + smooth lerp (follow near ~75% toward edge) ---
+  function updateCamera(dt) {
+    const viewW = canvas.width / CELL;
+    const viewH = canvas.height / CELL;
+    if (!camera.initialized) {
+      camera.x = player.x - viewW / 2;
+      camera.y = player.y - viewH / 2;
+      camera.initialized = true;
+    }
+
+    const halfW = viewW / 2;
+    const halfH = viewH / 2;
+    // Distance from center at which follow begins (3/4 toward edge)
+    const deadW = halfW * CAM_EDGE_FOLLOW;
+    const deadH = halfH * CAM_EDGE_FOLLOW;
+
+    const screenX = player.x - camera.x;
+    const screenY = player.y - camera.y;
+    let targetX = camera.x;
+    let targetY = camera.y;
+
+    if (screenX > halfW + deadW) targetX = player.x - (halfW + deadW);
+    else if (screenX < halfW - deadW) targetX = player.x - (halfW - deadW);
+
+    if (screenY > halfH + deadH) targetY = player.y - (halfH + deadH);
+    else if (screenY < halfH - deadH) targetY = player.y - (halfH - deadH);
+
+    const k = 1 - Math.exp(-CAM_LERP * dt);
+    camera.x += (targetX - camera.x) * k;
+    camera.y += (targetY - camera.y) * k;
+
+    camera.x = Math.max(0, Math.min(Math.max(0, maze.cols - viewW), camera.x));
+    camera.y = Math.max(0, Math.min(Math.max(0, maze.rows - viewH), camera.y));
+  }
+
   // --- Rendering ---
   function draw() {
     if (!maze) return;
-    const w = canvas.width, h = canvas.height;
+    const w = canvas.width,
+      h = canvas.height;
     ctx.fillStyle = "#0a0612";
     ctx.fillRect(0, 0, w, h);
 
-    // Camera follow
-    const viewW = w / CELL, viewH = h / CELL;
-    camera.x = player.x - viewW / 2;
-    camera.y = player.y - viewH / 2;
-    camera.x = Math.max(0, Math.min(maze.cols - viewW, camera.x));
-    camera.y = Math.max(0, Math.min(maze.rows - viewH, camera.y));
+    const viewW = w / CELL,
+      viewH = h / CELL;
 
     torchFlicker = 0.85 + Math.sin(animTime * 6) * 0.08 + Math.sin(animTime * 13) * 0.04;
 
@@ -696,27 +973,49 @@
         const sy = (y - camera.y) * CELL;
         const t = maze.grid[y][x];
         if (t === TILE.WALL) {
-          ctx.fillStyle = "#1e1830";
+          // Manor stone blocks
+          ctx.fillStyle = "#1a1524";
           ctx.fillRect(sx, sy, CELL, CELL);
-          ctx.fillStyle = "#2a2438";
-          ctx.fillRect(sx + 2, sy + 2, CELL - 4, CELL - 4);
-          // purple accent cracks
-          if ((x + y) % 5 === 0) {
-            ctx.strokeStyle = "rgba(139,92,246,0.35)";
-            ctx.beginPath();
-            ctx.moveTo(sx + 4, sy + 8);
-            ctx.lineTo(sx + CELL - 6, sy + CELL - 10);
-            ctx.stroke();
+          ctx.fillStyle = "#2c2438";
+          ctx.fillRect(sx + 1, sy + 1, CELL - 2, CELL - 2);
+          // Brick mortar lines
+          ctx.strokeStyle = "rgba(10,8,16,0.55)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy + CELL / 2);
+          ctx.lineTo(sx + CELL, sy + CELL / 2);
+          if ((x + Math.floor(y / 2)) % 2 === 0) {
+            ctx.moveTo(sx + CELL / 2, sy);
+            ctx.lineTo(sx + CELL / 2, sy + CELL / 2);
+          } else {
+            ctx.moveTo(sx + CELL / 2, sy + CELL / 2);
+            ctx.lineTo(sx + CELL / 2, sy + CELL);
+          }
+          ctx.stroke();
+          if ((x * 3 + y * 7) % 11 === 0) {
+            ctx.fillStyle = "rgba(139,92,246,0.2)";
+            ctx.fillRect(sx + 4, sy + 4, 6, 4);
           }
         } else {
-          ctx.fillStyle = "#12101c";
+          // Polished manor floor
+          ctx.fillStyle = "#14101c";
           ctx.fillRect(sx, sy, CELL, CELL);
-          // floor tint
-          ctx.fillStyle = "rgba(80,40,100,0.12)";
+          ctx.fillStyle = "rgba(90,55,40,0.14)";
           ctx.fillRect(sx, sy, CELL, CELL);
+          if ((x + y) % 2 === 0) {
+            ctx.fillStyle = "rgba(255,255,255,0.015)";
+            ctx.fillRect(sx, sy, CELL, CELL);
+          }
 
           if (t === TILE.EXIT) {
-            const eg = ctx.createRadialGradient(sx + CELL / 2, sy + CELL / 2, 2, sx + CELL / 2, sy + CELL / 2, CELL);
+            const eg = ctx.createRadialGradient(
+              sx + CELL / 2,
+              sy + CELL / 2,
+              2,
+              sx + CELL / 2,
+              sy + CELL / 2,
+              CELL
+            );
             eg.addColorStop(0, `rgba(94,234,212,${0.7 * torchFlicker})`);
             eg.addColorStop(1, "transparent");
             ctx.fillStyle = eg;
@@ -726,12 +1025,16 @@
             ctx.textAlign = "center";
             ctx.fillText("EXIT", sx + CELL / 2, sy + CELL / 2 + 4);
           } else if (t === TILE.TRAP) {
-            ctx.fillStyle = "rgba(255,77,109,0.35)";
+            // Hard to see — low-contrast floor seam
+            ctx.strokeStyle = "rgba(80,50,70,0.45)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(sx + 8, sy + 8, CELL - 16, CELL - 16);
+            ctx.fillStyle = "rgba(60,30,45,0.28)";
+            ctx.fillRect(sx + 10, sy + 10, CELL - 20, CELL - 20);
+            ctx.fillStyle = "rgba(120,40,60,0.18)";
             ctx.beginPath();
-            ctx.arc(sx + CELL / 2, sy + CELL / 2, 7, 0, Math.PI * 2);
+            ctx.arc(sx + CELL / 2, sy + CELL / 2, 3, 0, Math.PI * 2);
             ctx.fill();
-            ctx.strokeStyle = "#ff4d6d";
-            ctx.stroke();
           } else if (t === TILE.POTION) {
             ctx.fillStyle = "#5eead4";
             ctx.beginPath();
@@ -739,13 +1042,18 @@
             ctx.fill();
             ctx.fillStyle = "#a5f3fc";
             ctx.fillRect(sx + CELL / 2 - 3, sy + CELL / 2 + 4, 6, 5);
-          } else if (t === TILE.CLOTH_SHIRT || t === TILE.CLOTH_SHOES || t === TILE.CLOTH_PANTS) {
+          } else if (
+            t === TILE.CLOTH_SHIRT ||
+            t === TILE.CLOTH_SHOES ||
+            t === TILE.CLOTH_PANTS
+          ) {
             ctx.fillStyle = "#e040a0";
             ctx.fillRect(sx + 6, sy + 8, CELL - 12, CELL - 14);
             ctx.fillStyle = "#ffb3e0";
             ctx.font = "10px sans-serif";
             ctx.textAlign = "center";
-            const label = t === TILE.CLOTH_SHIRT ? "👕" : t === TILE.CLOTH_SHOES ? "👟" : "👖";
+            const label =
+              t === TILE.CLOTH_SHIRT ? "👕" : t === TILE.CLOTH_SHOES ? "👟" : "👖";
             ctx.fillText(label, sx + CELL / 2, sy + CELL / 2 + 4);
           }
         }
@@ -755,17 +1063,15 @@
     const px = (player.x - camera.x) * CELL;
     const py = (player.y - camera.y) * CELL;
 
-    // Draw wall-mounted torch sprites (before entities)
     if (maze.torches) {
       for (const t of maze.torches) {
         const sx = (t.x - camera.x) * CELL;
         const sy = (t.y - camera.y) * CELL;
-        if (sx < -CELL || sy < -CELL || sx > canvas.width + CELL || sy > canvas.height + CELL) continue;
+        if (sx < -CELL || sy < -CELL || sx > canvas.width + CELL || sy > canvas.height + CELL)
+          continue;
         const flicker = torchFlicker * (0.92 + Math.sin(animTime * 9 + t.x * 1.7) * 0.08);
-        // Sconce
         ctx.fillStyle = "#3a2a20";
         ctx.fillRect(sx + CELL / 2 - 3, sy + 4, 6, 10);
-        // Flame
         ctx.fillStyle = `rgba(255,180,60,${0.85 * flicker})`;
         ctx.beginPath();
         ctx.ellipse(sx + CELL / 2, sy + 6, 4 * flicker, 7 * flicker, 0, 0, Math.PI * 2);
@@ -777,16 +1083,21 @@
       }
     }
 
-    // Enemies
     for (const e of enemies) {
+      // Hide minions that are about to despawn (fade)
+      let alpha = 1;
+      if (e.kind === "minion" && e.fleeing && e.despawnAt) {
+        const left = e.despawnAt - performance.now();
+        if (left < 350) alpha = Math.max(0, left / 350);
+      }
+      ctx.globalAlpha = alpha;
       const ex = (e.x - camera.x) * CELL;
       const ey = (e.y - camera.y) * CELL;
       if (e.kind === "succubus") {
-        ctx.fillStyle = "#c040a0";
+        ctx.fillStyle = e.hasSight ? "#e050b0" : "#c040a0";
         ctx.beginPath();
         ctx.arc(ex, ey, 11, 0, Math.PI * 2);
         ctx.fill();
-        // horns
         ctx.strokeStyle = "#ff6bcb";
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -795,7 +1106,6 @@
         ctx.moveTo(ex + 5, ey - 9);
         ctx.lineTo(ex + 8, ey - 16);
         ctx.stroke();
-        // aura
         ctx.strokeStyle = `rgba(224,64,160,${0.4 + Math.sin(e.anim) * 0.2})`;
         ctx.beginPath();
         ctx.arc(ex, ey, 14 + Math.sin(e.anim) * 2, 0, Math.PI * 2);
@@ -811,16 +1121,15 @@
         ctx.arc(ex + 2, ey - 1, 1.5, 0, Math.PI * 2);
         ctx.fill();
       }
+      ctx.globalAlpha = 1;
     }
 
-    // Player
     const inv = performance.now() < invulnUntil;
     if (!inv || Math.floor(animTime * 12) % 2 === 0) {
-      ctx.fillStyle = "#7ec8ff";
+      ctx.fillStyle = player.sprinting ? "#a8e0ff" : "#7ec8ff";
       ctx.beginPath();
       ctx.arc(px, py, 9, 0, Math.PI * 2);
       ctx.fill();
-      // clothing indicators as tiny dots
       ctx.fillStyle = player.clothing.shirt ? "#5eead4" : "#333";
       ctx.fillRect(px - 8, py - 14, 5, 3);
       ctx.fillStyle = player.clothing.pants ? "#5eead4" : "#333";
@@ -829,12 +1138,15 @@
       ctx.fillRect(px + 4, py + 10, 5, 3);
     }
 
-    // Particles
     for (let i = particles.length - 1; i >= 0; i--) {
       const p = particles[i];
       p.life -= 1 / 60;
-      p.x += p.vx / 60; p.y += p.vy / 60;
-      if (p.life <= 0) { particles.splice(i, 1); continue; }
+      p.x += p.vx / 60;
+      p.y += p.vy / 60;
+      if (p.life <= 0) {
+        particles.splice(i, 1);
+        continue;
+      }
       ctx.globalAlpha = Math.max(0, p.life);
       ctx.fillStyle = p.color;
       ctx.beginPath();
@@ -843,17 +1155,13 @@
       ctx.globalAlpha = 1;
     }
 
-    // --- Lighting: dim cave + torch pools + forward flashlight ---
-    // Build darkness on offscreen canvas; destination-out punches light holes
-    // without erasing the maze. Overlay keeps layout visible but shadowy.
+    // Lighting
     lightCtx.clearRect(0, 0, w, h);
     lightCtx.globalCompositeOperation = "source-over";
     lightCtx.fillStyle = `rgba(4, 2, 10, ${AMBIENT_DARK})`;
     lightCtx.fillRect(0, 0, w, h);
-
     lightCtx.globalCompositeOperation = "destination-out";
 
-    // Torch glow pools
     if (maze.torches) {
       for (const t of maze.torches) {
         const tx = (t.x + 0.5 - camera.x) * CELL;
@@ -870,7 +1178,6 @@
       }
     }
 
-    // Soft ambient pool around player (dim personal light)
     {
       const rad = 1.6 * CELL;
       const g = lightCtx.createRadialGradient(px, py, 0, px, py, rad);
@@ -882,7 +1189,6 @@
       lightCtx.fill();
     }
 
-    // Flashlight cone (brighter beam ahead of facing)
     {
       const range = FLASH_RANGE * CELL;
       const ang = player.facing;
@@ -901,7 +1207,6 @@
     lightCtx.globalCompositeOperation = "source-over";
     ctx.drawImage(lightCanvas, 0, 0);
 
-    // Warm colored glows (additive tint over punched lights)
     ctx.save();
     ctx.globalCompositeOperation = "lighter";
     if (maze.torches) {
@@ -919,7 +1224,6 @@
         ctx.fill();
       }
     }
-    // Cool-white flashlight tint
     {
       const range = FLASH_RANGE * CELL;
       const ang = player.facing;
@@ -938,7 +1242,6 @@
     }
     ctx.restore();
 
-    // Flashlight rim hint (visible beam edge)
     {
       const range = FLASH_RANGE * CELL;
       const ang = player.facing;
@@ -951,31 +1254,31 @@
       ctx.stroke();
     }
 
-    // Facing chevron on player (flashlight direction cue)
     {
-      const inv = performance.now() < invulnUntil;
       if (!inv || Math.floor(animTime * 12) % 2 === 0) {
         const tip = 14;
         ctx.fillStyle = "rgba(220,235,255,0.85)";
         ctx.beginPath();
         ctx.moveTo(px + player.facingDx * tip, py + player.facingDy * tip);
-        ctx.lineTo(px - player.facingDy * 5 - player.facingDx * 2,
-                   py + player.facingDx * 5 - player.facingDy * 2);
-        ctx.lineTo(px + player.facingDy * 5 - player.facingDx * 2,
-                   py - player.facingDx * 5 - player.facingDy * 2);
+        ctx.lineTo(
+          px - player.facingDy * 5 - player.facingDx * 2,
+          py + player.facingDx * 5 - player.facingDy * 2
+        );
+        ctx.lineTo(
+          px + player.facingDy * 5 - player.facingDx * 2,
+          py - player.facingDx * 5 - player.facingDy * 2
+        );
         ctx.closePath();
         ctx.fill();
       }
     }
 
-    // Soft outer vignette (doesn't kill HUD — HUD is DOM above canvas)
     const vig = ctx.createRadialGradient(w / 2, h / 2, h * 0.35, w / 2, h / 2, h * 0.85);
     vig.addColorStop(0, "transparent");
-    vig.addColorStop(1, "rgba(5,2,10,0.4)");
+    vig.addColorStop(1, "rgba(5,2,10,0.45)");
     ctx.fillStyle = vig;
     ctx.fillRect(0, 0, w, h);
 
-    // Floating scare text (drawn last, fully lit)
     ctx.textAlign = "center";
     ctx.font = "bold 12px Segoe UI, sans-serif";
     for (const ft of floatTexts) {
@@ -1000,22 +1303,42 @@
     }
     if (mode !== "play") return;
 
-    let dx = 0, dy = 0;
+    let dx = 0,
+      dy = 0;
     if (keys["ArrowUp"] || keys["w"] || keys["W"] || keys._up) dy -= 1;
     if (keys["ArrowDown"] || keys["s"] || keys["S"] || keys._down) dy += 1;
     if (keys["ArrowLeft"] || keys["a"] || keys["A"] || keys._left) dx -= 1;
     if (keys["ArrowRight"] || keys["d"] || keys["D"] || keys._right) dx += 1;
+
+    const wantSprint =
+      keys["Shift"] || keys["ShiftLeft"] || keys["ShiftRight"] || keys._sprint;
+    const canSprint = wantSprint && player.stamina > 0 && (dx || dy);
+    player.sprinting = !!canSprint;
+
+    if (player.sprinting) {
+      player.stamina = Math.max(0, player.stamina - STAMINA_DRAIN * dt);
+      if (player.stamina <= 0) player.sprinting = false;
+    } else {
+      player.stamina = Math.min(STAMINA_MAX, player.stamina + STAMINA_REGEN * dt);
+    }
+
+    const moveSpeed = player.sprinting ? PLAYER_SPRINT : PLAYER_WALK;
+    player.speed = moveSpeed;
+
     if (dx || dy) {
       const len = Math.hypot(dx, dy);
-      const nx = dx / len, ny = dy / len;
-      tryMove(player, nx, ny, dt, player.speed);
-      // Last nonzero move sets flashlight facing
+      const nx = dx / len,
+        ny = dy / len;
+      tryMove(player, nx, ny, dt, moveSpeed);
       player.facing = Math.atan2(ny, nx);
       player.facingDx = nx;
       player.facingDy = ny;
     }
 
-    // Float text
+    updateHUD();
+    updateCamera(dt);
+    updateHeartbeat(dt);
+
     for (let i = floatTexts.length - 1; i >= 0; i--) {
       const ft = floatTexts[i];
       ft.life -= dt;
@@ -1031,7 +1354,13 @@
     const dt = Math.min(0.05, (ts - lastTs) / 1000 || 0);
     lastTs = ts;
     update(dt);
-    if (mode === "play" || mode === "pause" || mode === "cinematic" || mode === "win" || mode === "gameover") {
+    if (
+      mode === "play" ||
+      mode === "pause" ||
+      mode === "cinematic" ||
+      mode === "win" ||
+      mode === "gameover"
+    ) {
       if (maze) draw();
     }
     requestAnimationFrame(frame);
@@ -1040,6 +1369,8 @@
   // --- Input ---
   window.addEventListener("keydown", (e) => {
     keys[e.key] = true;
+    if (e.key === "Shift") keys["Shift"] = true;
+    if (e.code === "ShiftLeft" || e.code === "ShiftRight") keys[e.code] = true;
     if (e.key === " " || e.code === "Space") {
       e.preventDefault();
       if (mode === "cinematic") resistTap();
@@ -1052,18 +1383,34 @@
       showOverlay("pause-overlay", false);
     }
   });
-  window.addEventListener("keyup", (e) => { keys[e.key] = false; });
+  window.addEventListener("keyup", (e) => {
+    keys[e.key] = false;
+    if (e.key === "Shift") keys["Shift"] = false;
+    if (e.code === "ShiftLeft" || e.code === "ShiftRight") keys[e.code] = false;
+  });
 
   $("btn-resist").addEventListener("click", resistTap);
-  $("btn-resist").addEventListener("touchstart", (e) => { e.preventDefault(); resistTap(); }, { passive: false });
+  $("btn-resist").addEventListener(
+    "touchstart",
+    (e) => {
+      e.preventDefault();
+      resistTap();
+    },
+    { passive: false }
+  );
 
-  // Mobile d-pad
   document.querySelectorAll(".dpad").forEach((btn) => {
     const dir = btn.dataset.dir;
     const map = { up: "_up", down: "_down", left: "_left", right: "_right" };
     const k = map[dir];
-    const on = (e) => { e.preventDefault(); keys[k] = true; };
-    const off = (e) => { e.preventDefault(); keys[k] = false; };
+    const on = (e) => {
+      e.preventDefault();
+      keys[k] = true;
+    };
+    const off = (e) => {
+      e.preventDefault();
+      keys[k] = false;
+    };
     btn.addEventListener("touchstart", on, { passive: false });
     btn.addEventListener("touchend", off, { passive: false });
     btn.addEventListener("touchcancel", off, { passive: false });
@@ -1072,7 +1419,24 @@
     btn.addEventListener("mouseleave", off);
   });
 
-  // Buttons
+  const sprintBtn = $("btn-sprint");
+  if (sprintBtn) {
+    const on = (e) => {
+      e.preventDefault();
+      keys._sprint = true;
+    };
+    const off = (e) => {
+      e.preventDefault();
+      keys._sprint = false;
+    };
+    sprintBtn.addEventListener("touchstart", on, { passive: false });
+    sprintBtn.addEventListener("touchend", off, { passive: false });
+    sprintBtn.addEventListener("touchcancel", off, { passive: false });
+    sprintBtn.addEventListener("mousedown", on);
+    sprintBtn.addEventListener("mouseup", off);
+    sprintBtn.addEventListener("mouseleave", off);
+  }
+
   $("btn-start").addEventListener("click", () => startGame(true));
   $("btn-resume").addEventListener("click", () => {
     mode = "play";
@@ -1109,8 +1473,6 @@
   $("btn-mute").addEventListener("click", toggleMute);
   $("btn-mute-title").addEventListener("click", toggleMute);
 
-  // Canvas tap also resists when cinematic (in case)
-  canvas.addEventListener("click", () => {});
   cineCanvas.addEventListener("click", resistTap);
 
   setMuteUI();

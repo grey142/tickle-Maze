@@ -320,3 +320,25 @@ kbd {
   0%, 100% { box-shadow: 0 0 12px rgba(224,64,160,0.4); }
   50% { box-shadow: 0 0 28px rgba(224,64,160,0.85); }
 }
+
+/* Stamina */
+.fill.stamina { background: linear-gradient(90deg, #38bdf8, #22d3ee); }
+
+/* Mobile sprint */
+.btn-sprint {
+  margin-top: 8px;
+  min-width: 120px;
+  padding: 0.65rem 1.2rem;
+  border-radius: 12px;
+  border: 1px solid #3a7a90;
+  background: rgba(20, 50, 70, 0.92);
+  color: #7dd3fc;
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.btn-sprint:active {
+  background: #0ea5e9;
+  color: #041018;
+}

@@ -1,5 +1,5 @@
 /**
- * Cinematic vignette pools for Cave Tickle Maze.
+ * Cinematic vignette pools for Tickle Maze.
  * Types: feet (shoes), belly (shirt), tied (pants)
  */
 window.SCENE_POOLS = {
@@ -21,8 +21,8 @@ window.SCENE_POOLS = {
     },
     {
       title: "Stocking Snatch",
-      text: "Your footwear vanishes in a puff of magenta smoke. Cool cave air hits bare soles — then a hundred light fingertip taps.",
-      captions: ["Bare soles in the cave~", "Tap-tap-tickle!", "She's merciless today!"]
+      text: "Your footwear vanishes in a puff of magenta smoke. Cool stone air hits bare soles — then a hundred light fingertip taps.",
+      captions: ["Bare soles in the manor~", "Tap-tap-tickle!", "She's merciless today!"]
     },
     {
       title: "Foot Feast",
@@ -33,7 +33,7 @@ window.SCENE_POOLS = {
   belly: [
     {
       title: "Flank Frenzy",
-      text: "Cool claws skim under your shirt and find every soft spot along your flanks. You squirm as the maze walls echo your laughter.",
+      text: "Cool claws skim under your shirt and find every soft spot along your flanks. You squirm as the stone halls echo your laughter.",
       captions: ["Sides are fair game~", "No armor for the midriff!", "Giggle for me~"]
     },
     {
@@ -66,7 +66,7 @@ window.SCENE_POOLS = {
     {
       title: "Altar of Giggles",
       text: "You're laid across a glowing rune-carved slab. Pants tugged just so, the whole crew takes turns finding your weakest spots.",
-      captions: ["Cave altar special~", "Everyone gets a turn!", "Resist the ritual!"]
+      captions: ["Manor altar special~", "Everyone gets a turn!", "Resist the ritual!"]
     },
     {
       title: "Webbed & Wriggling",

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <title>Cave Tickle Maze</title>
+  <title>Tickle Maze — Underground Mansion</title>
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
@@ -11,13 +11,13 @@
     <!-- Title Screen -->
     <div id="title-screen" class="screen active">
       <div class="title-glow"></div>
-      <h1 class="game-title">Cave Tickle Maze</h1>
-      <p class="subtitle">Explore the glowing caves… if you dare to giggle.</p>
-      <p class="flavor">A playful succubus and her tickly minions haunt these tunnels.<br/>Keep your clothes. Resist the tickles. Find the exit.</p>
-      <button id="btn-start" class="btn primary">Enter the Cave</button>
+      <h1 class="game-title">Tickle Maze</h1>
+      <p class="subtitle">An underground mansion of giggles and glowing exits.</p>
+      <p class="flavor">A playful succubus and her tickly minions haunt these stone halls.<br/>Keep your clothes. Resist the tickles. Find the exit.</p>
+      <button id="btn-start" class="btn primary">Enter the Mansion</button>
       <div class="title-hints">
-        <p><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> Move (flashlight follows facing) &nbsp;·&nbsp; <kbd>Space</kbd> Resist &nbsp;·&nbsp; <kbd>Esc</kbd>/<kbd>P</kbd> Pause</p>
-        <p style="margin-top:0.4rem;font-size:0.85em;">Beam monsters to scare them — watch your back!</p>
+        <p><kbd>WASD</kbd> / <kbd>↑↓←→</kbd> Move &nbsp;·&nbsp; <kbd>Shift</kbd> Sprint &nbsp;·&nbsp; <kbd>Space</kbd> Resist &nbsp;·&nbsp; <kbd>Esc</kbd>/<kbd>P</kbd> Pause</p>
+        <p style="margin-top:0.4rem;font-size:0.85em;">Flashlight scares <strong>minions</strong> only — listen for her heartbeat!</p>
       </div>
       <button id="btn-mute-title" class="btn ghost small" type="button">🔊 Sound On</button>
     </div>
@@ -43,6 +43,11 @@
             <div class="meter-bar"><div id="sens-fill" class="fill sens"></div></div>
             <span id="sens-pct">0%</span>
           </div>
+          <div class="meter-block">
+            <label>Stamina</label>
+            <div class="meter-bar"><div id="stamina-fill" class="fill stamina"></div></div>
+            <span id="stamina-pct">100%</span>
+          </div>
         </div>
         <div class="hud-right">
           <span id="level-label">Level 1</span>
@@ -58,6 +63,7 @@
           <button class="dpad" data-dir="down">▼</button>
           <button class="dpad" data-dir="right">▶</button>
         </div>
+        <button id="btn-sprint" class="btn-sprint" type="button">SPRINT</button>
       </div>
       <div id="toast" class="toast hidden"></div>
     </div>
@@ -82,7 +88,7 @@
     <div id="pause-overlay" class="overlay hidden">
       <div class="panel">
         <h2>Paused</h2>
-        <p>The caves wait… for now.</p>
+        <p>The mansion waits… for now.</p>
         <button id="btn-resume" class="btn primary">Resume</button>
         <button id="btn-quit-title" class="btn ghost">Title Screen</button>
       </div>
