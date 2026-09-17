@@ -1,13 +1,14 @@
 /**
- * Underground tunnel mansion generator — large square maps of many
- * small rectangular/square rooms connected ONLY by doorways cut in
- * shared walls. No hallways. Seeded RNG so restart keeps the same layout.
+ * Underground tunnel mansion generator — a maze of SCREEN-SIZED rooms
+ * connected ONLY by open arched doorways in shared walls. No hallways.
+ * Seeded RNG so restart keeps the same layout.
  *
- * Sizing (level 1..10):
- *   map edge   ~165 → ~290 tiles (square)
- *   room size  cozy chambers ~5–9 tiles on a side
- *   rooms      base × 1.05^(level-1) (dense pack; oversized leaves keep splitting)
- *   dead-ends  10% + 2% per level above 1
+ * Sizing (level 1..10), tuned so each room roughly fills the 1600×1120 /
+ * CELL=80 camera (~20×14 tiles):
+ *   room size  ~16–22 wide × ~12–16 tall (square or rectangular)
+ *   L1 rooms   ~8–20 chambers (ref-map scale; prioritize L1 quality)
+ *   map grid   sized to the room cluster + rock border (not 165–290)
+ *   dead-ends  ~10% on L1, modest rise per level
  */
 window.MazeGen = (function () {
   function mulberry32(a) {
@@ -32,22 +33,27 @@ window.MazeGen = (function () {
   };
 
   const KEYS_REQUIRED = 3;
-  const BASE_ROOMS = 220;
 
   function levelParams(level) {
     const lv = Math.max(1, level | 0);
     const t = Math.min(lv, 10);
-    let size = Math.round(165 + (t - 1) * (125 / 9));
-    if (lv > 10) size = Math.min(340, size + (lv - 10) * 8);
+    // L1 ~12 rooms (ref-map order); modest growth — still screen-sized chambers
     const roomCount = Math.max(
       8,
-      Math.round(BASE_ROOMS * Math.pow(1.05, t - 1) + (lv > 10 ? (lv - 10) * 1.5 : 0))
+      Math.round(12 + (t - 1) * 0.7 + (lv > 10 ? (lv - 10) * 0.4 : 0))
     );
+    const avgW = 19;
+    const avgH = 15;
+    const colsAcross = Math.max(3, Math.round(Math.sqrt(roomCount)));
+    const rowsDown = Math.max(3, Math.ceil(roomCount / colsAcross));
+    const margin = 4;
+    const cols = colsAcross * avgW + (colsAcross - 1) + margin * 2;
+    const rows = rowsDown * avgH + (rowsDown - 1) + margin * 2;
     const deadEndRate = Math.min(
-      0.4,
-      0.1 + 0.02 * (t - 1) + (lv > 10 ? 0.02 * Math.min(lv - 10, 5) : 0)
+      0.28,
+      0.1 + 0.015 * (t - 1) + (lv > 10 ? 0.01 * Math.min(lv - 10, 5) : 0)
     );
-    return { cols: size, rows: size, roomCount, deadEndRate, level: lv };
+    return { cols: cols, rows: rows, roomCount: roomCount, deadEndRate: deadEndRate, level: lv };
   }
 
   function carveRect(grid, x0, y0, w, h) {
@@ -70,131 +76,153 @@ window.MazeGen = (function () {
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
   }
 
-  /** BSP: small leaves (cozy rooms) separated by 1-tile shared walls. */
+  /** BSP: screen-sized leaves (~16–22 × ~12–16) separated by 1-tile shared walls. */
   function bspPartition(root, targetLeaves, rng) {
-    const minLeafW = 5;
-    const minLeafH = 5;
-    const maxRoom = 9;
+    const minW = 14;
+    const minH = 12;
+    const preferW = 18;
+    const preferH = 14;
+    const softMaxW = 22;
+    const softMaxH = 16;
+    const hardMaxW = 26;
+    const hardMaxH = 20;
     const leaves = [];
 
-    function oversized(node) {
-      return node.w > maxRoom || node.h > maxRoom;
+    function softOver(node) {
+      return node.w > softMaxW || node.h > softMaxH;
+    }
+    function hardOver(node) {
+      return node.w > hardMaxW || node.h > hardMaxH;
+    }
+    function canSplitW(node) {
+      return node.w >= minW * 2 + 1;
+    }
+    function canSplitH(node) {
+      return node.h >= minH * 2 + 1;
+    }
+
+    /** Pick a split so both children land near the prefer band when possible. */
+    function chooseSplitX(node) {
+      const minSplit = node.x + minW;
+      const maxSplit = node.x + node.w - minW - 1;
+      if (minSplit > maxSplit) return null;
+      // Ideal: left width ≈ preferW (or half if parent is only slightly large)
+      const idealLeft = Math.min(
+        softMaxW,
+        Math.max(minW, Math.min(preferW, Math.floor((node.w - 1) / 2)))
+      );
+      let splitX = node.x + idealLeft;
+      if (splitX < minSplit) splitX = minSplit;
+      if (splitX > maxSplit) splitX = maxSplit;
+      // Jitter within ±2 while staying valid
+      const jitter = Math.floor(rng() * 5) - 2;
+      splitX = Math.max(minSplit, Math.min(maxSplit, splitX + jitter));
+      return splitX;
+    }
+
+    function chooseSplitY(node) {
+      const minSplit = node.y + minH;
+      const maxSplit = node.y + node.h - minH - 1;
+      if (minSplit > maxSplit) return null;
+      const idealTop = Math.min(
+        softMaxH,
+        Math.max(minH, Math.min(preferH, Math.floor((node.h - 1) / 2)))
+      );
+      let splitY = node.y + idealTop;
+      if (splitY < minSplit) splitY = minSplit;
+      if (splitY > maxSplit) splitY = maxSplit;
+      const jitter = Math.floor(rng() * 5) - 2;
+      splitY = Math.max(minSplit, Math.min(maxSplit, splitY + jitter));
+      return splitY;
+    }
+
+    function doSplit(node) {
+      const needW = node.w > softMaxW && canSplitW(node);
+      const needH = node.h > softMaxH && canSplitH(node);
+      let horizontal;
+      if (needW && needH) {
+        horizontal = node.h / softMaxH > node.w / softMaxW;
+      } else if (needH) {
+        horizontal = true;
+      } else if (needW) {
+        horizontal = false;
+      } else if (canSplitW(node) && canSplitH(node)) {
+        horizontal = node.h > node.w * 1.1 ? true : node.w > node.h * 1.1 ? false : rng() < 0.5;
+      } else {
+        horizontal = canSplitH(node);
+      }
+
+      if (!horizontal && canSplitW(node)) {
+        const splitX = chooseSplitX(node);
+        if (splitX == null) return null;
+        return [
+          { x: node.x, y: node.y, w: splitX - node.x, h: node.h },
+          { x: splitX + 1, y: node.y, w: node.x + node.w - splitX - 1, h: node.h }
+        ];
+      }
+      if (canSplitH(node)) {
+        const splitY = chooseSplitY(node);
+        if (splitY == null) return null;
+        return [
+          { x: node.x, y: node.y, w: node.w, h: splitY - node.y },
+          { x: node.x, y: splitY + 1, w: node.w, h: node.y + node.h - splitY - 1 }
+        ];
+      }
+      if (canSplitW(node)) {
+        const splitX = chooseSplitX(node);
+        if (splitX == null) return null;
+        return [
+          { x: node.x, y: node.y, w: splitX - node.x, h: node.h },
+          { x: splitX + 1, y: node.y, w: node.x + node.w - splitX - 1, h: node.h }
+        ];
+      }
+      return null;
     }
 
     function split(node, depth) {
-      const canW = node.w >= minLeafW * 2 + 1;
-      const canH = node.h >= minLeafH * 2 + 1;
-      const mustSplit = oversized(node) && (canW || canH);
+      const can = canSplitW(node) || canSplitH(node);
+      const must = hardOver(node) && can;
+      const wantMore = leaves.length + 1 < targetLeaves;
+      const soft = softOver(node) && can && (wantMore || depth < 2);
       const stop =
-        (!canW && !canH) ||
-        (!mustSplit && leaves.length + 1 >= targetLeaves && depth > 1) ||
-        (!mustSplit && depth > 2 && leaves.length >= targetLeaves * 0.85 && rng() < 0.18);
+        !can ||
+        (!must && !soft && !wantMore && depth > 0) ||
+        (!must && !wantMore && softOver(node) === false && depth > 0) ||
+        (!must && depth > 3 && leaves.length >= targetLeaves);
 
-      if (stop) {
+      if (stop && !must) {
         leaves.push(node);
         return;
       }
-      if (!canW && !canH) {
+      const kids = doSplit(node);
+      if (!kids) {
         leaves.push(node);
         return;
       }
-
-      let horizontal;
-      if (canW && canH) {
-        // Bias toward square-ish chambers; still allow slight rectangles.
-        horizontal = node.w > node.h * 1.12 ? false : node.h > node.w * 1.12 ? true : rng() < 0.5;
-      } else {
-        horizontal = !!canH && !canW;
-      }
-
-      if (!horizontal) {
-        const minSplit = node.x + minLeafW;
-        const maxSplit = node.x + node.w - minLeafW - 1;
-        if (minSplit > maxSplit) {
-          leaves.push(node);
-          return;
-        }
-        let splitX;
-        if (node.w <= maxRoom * 2 + 1 && rng() < 0.55) {
-          // Prefer child widths in the cozy 5–9 band when possible.
-          const lo = Math.max(minSplit, node.x + 5);
-          const hi = Math.min(maxSplit, node.x + node.w - 5 - 1);
-          splitX = lo <= hi ? lo + Math.floor(rng() * (hi - lo + 1)) : minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
-        } else {
-          splitX = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
-        }
-        split({ x: node.x, y: node.y, w: splitX - node.x, h: node.h }, depth + 1);
-        split(
-          { x: splitX + 1, y: node.y, w: node.x + node.w - splitX - 1, h: node.h },
-          depth + 1
-        );
-      } else {
-        const minSplit = node.y + minLeafH;
-        const maxSplit = node.y + node.h - minLeafH - 1;
-        if (minSplit > maxSplit) {
-          leaves.push(node);
-          return;
-        }
-        let splitY;
-        if (node.h <= maxRoom * 2 + 1 && rng() < 0.55) {
-          const lo = Math.max(minSplit, node.y + 5);
-          const hi = Math.min(maxSplit, node.y + node.h - 5 - 1);
-          splitY = lo <= hi ? lo + Math.floor(rng() * (hi - lo + 1)) : minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
-        } else {
-          splitY = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
-        }
-        split({ x: node.x, y: node.y, w: node.w, h: splitY - node.y }, depth + 1);
-        split(
-          { x: node.x, y: splitY + 1, w: node.w, h: node.y + node.h - splitY - 1 },
-          depth + 1
-        );
-      }
+      split(kids[0], depth + 1);
+      split(kids[1], depth + 1);
     }
 
     split(root, 0);
 
+    // Guarantee nothing past hard max; prefer soft max while under ~20 rooms for L1-scale
     let guard = 0;
-    while (guard++ < 2500) {
-      leaves.sort((a, b) => b.w * b.h - a.w * a.h);
+    while (guard++ < 400) {
+      leaves.sort(function (a, b) {
+        return b.w * b.h - a.w * a.h;
+      });
       const node = leaves[0];
-      const canW = node.w >= minLeafW * 2 + 1;
-      const canH = node.h >= minLeafH * 2 + 1;
-      const mustSplit = oversized(node) && (canW || canH);
-      if (!canW && !canH) break;
-      if (!mustSplit && leaves.length >= targetLeaves) break;
+      const must = hardOver(node) && (canSplitW(node) || canSplitH(node));
+      const soft =
+        softOver(node) &&
+        (canSplitW(node) || canSplitH(node)) &&
+        leaves.length < Math.max(targetLeaves, Math.min(20, targetLeaves + 4));
+      if (!must && !soft) break;
+      if (!must && leaves.length >= 20) break;
+      const kids = doSplit(node);
+      if (!kids) break;
       leaves.shift();
-      const horizontal = canH && (!canW || node.h > node.w || (node.h === node.w && rng() < 0.5));
-      if (!horizontal) {
-        const minSplit = node.x + minLeafW;
-        const maxSplit = node.x + node.w - minLeafW - 1;
-        if (minSplit > maxSplit) {
-          leaves.push(node);
-          break;
-        }
-        const splitX = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
-        leaves.push({ x: node.x, y: node.y, w: splitX - node.x, h: node.h });
-        leaves.push({
-          x: splitX + 1,
-          y: node.y,
-          w: node.x + node.w - splitX - 1,
-          h: node.h
-        });
-      } else {
-        const minSplit = node.y + minLeafH;
-        const maxSplit = node.y + node.h - minLeafH - 1;
-        if (minSplit > maxSplit) {
-          leaves.push(node);
-          break;
-        }
-        const splitY = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
-        leaves.push({ x: node.x, y: node.y, w: node.w, h: splitY - node.y });
-        leaves.push({
-          x: node.x,
-          y: splitY + 1,
-          w: node.w,
-          h: node.y + node.h - splitY - 1
-        });
-      }
+      leaves.push(kids[0], kids[1]);
     }
     return leaves;
   }
@@ -226,7 +254,8 @@ window.MazeGen = (function () {
   function carveDoorway(grid, edge, rng) {
     const span = edge.hi - edge.lo + 1;
     if (span < 2) return null;
-    const width = Math.min(span, 2 + (span >= 3 && rng() < 0.28 ? 1 : 0));
+    // Open arches: typically 3 tiles, sometimes 4 on long shared walls
+    const width = Math.min(span, span >= 5 ? (rng() < 0.45 ? 4 : 3) : span >= 3 ? 3 : 2);
     let start;
     if (rng() < 0.55) {
       start = edge.lo + Math.floor(rng() * (span - width + 1));
@@ -549,30 +578,31 @@ window.MazeGen = (function () {
         { side: "w", facing: "e" },
         { side: "e", facing: "w" }
       ];
-      const count = Math.min(r.w, r.h) <= 6 ? 1 + Math.floor(rng() * 2) : 2 + Math.floor(rng() * 3);
+      // Side-only décor; more pieces in screen-sized rooms, center stays clear
+      const count = 4 + Math.floor(rng() * 4);
       for (let fi = 0; fi < count; fi++) {
         const s = furnSides[Math.floor(rng() * 4)];
         let fx, fy, fw, fh;
         if (s.side === "n") {
           fw = 1 + Math.floor(rng() * 2);
           fh = 1;
-          fx = r.x + 2 + Math.floor(rng() * Math.max(1, r.w - fw - 4));
+          fx = r.x + 3 + Math.floor(rng() * Math.max(1, r.w - fw - 6));
           fy = r.y;
         } else if (s.side === "s") {
           fw = 1 + Math.floor(rng() * 2);
           fh = 1;
-          fx = r.x + 2 + Math.floor(rng() * Math.max(1, r.w - fw - 4));
+          fx = r.x + 3 + Math.floor(rng() * Math.max(1, r.w - fw - 6));
           fy = r.y + r.h - 1;
         } else if (s.side === "w") {
           fw = 1;
           fh = 1 + Math.floor(rng() * 2);
           fx = r.x;
-          fy = r.y + 2 + Math.floor(rng() * Math.max(1, r.h - fh - 4));
+          fy = r.y + 3 + Math.floor(rng() * Math.max(1, r.h - fh - 6));
         } else {
           fw = 1;
           fh = 1 + Math.floor(rng() * 2);
           fx = r.x + r.w - 1;
-          fy = r.y + 2 + Math.floor(rng() * Math.max(1, r.h - fh - 4));
+          fy = r.y + 3 + Math.floor(rng() * Math.max(1, r.h - fh - 6));
         }
         let ok = true;
         for (let yy = fy; yy < fy + fh && ok; yy++) {
@@ -583,17 +613,21 @@ window.MazeGen = (function () {
         if (!ok) continue;
         const roll = rng();
         let type, style, theme;
-        if (roll < 0.34) {
+        if (roll < 0.32) {
           type = "painting";
           style = Math.floor(rng() * paintingThemes.length);
           theme = paintingThemes[style];
-        } else if (roll < 0.67) {
+        } else if (roll < 0.58) {
           type = "furniture";
-          style = 0;
+          style = 0; // bookshelf
+          theme = null;
+        } else if (roll < 0.86) {
+          type = "furniture";
+          style = 1; // cabinet / dresser
           theme = null;
         } else {
           type = "furniture";
-          style = 3;
+          style = 3; // pedestal / urn accent
           theme = null;
         }
         decorations.push({
@@ -622,36 +656,48 @@ window.MazeGen = (function () {
     }
 
     if (startRoom) {
-      const sw = Math.min(6, Math.max(3, Math.floor(startRoom.w / 3)));
+      const sw = Math.min(5, Math.max(3, Math.floor(startRoom.w / 4)));
       const sx = startRoom.x + Math.floor((startRoom.w - sw) / 2);
-      decorations.push({
-        type: "stairs",
-        x: sx,
-        y: startRoom.y,
-        w: sw,
-        h: Math.min(3, startRoom.h - 2),
-        facing: "s",
-        gate: "entrance"
-      });
       decorations.push({
         type: "entranceGate",
         x: sx,
         y: startRoom.y,
         w: sw,
-        h: 2
+        h: 2,
+        gate: "entrance"
+      });
+      // Flanking torches for portcullis feel (also added to torches later if needed)
+      decorations.push({
+        type: "gateTorch",
+        x: sx - 1,
+        y: startRoom.y + 1
+      });
+      decorations.push({
+        type: "gateTorch",
+        x: sx + sw,
+        y: startRoom.y + 1
       });
     }
     if (exitRoom) {
-      const sw = Math.min(6, Math.max(3, Math.floor(exitRoom.w / 3)));
+      const sw = Math.min(5, Math.max(3, Math.floor(exitRoom.w / 4)));
       const sx = exitRoom.x + Math.floor((exitRoom.w - sw) / 2);
       decorations.push({
-        type: "stairs",
+        type: "exitGate",
         x: sx,
-        y: exitRoom.y + exitRoom.h - Math.min(3, exitRoom.h - 2),
+        y: exitRoom.y + exitRoom.h - 2,
         w: sw,
-        h: Math.min(3, exitRoom.h - 2),
-        facing: "s",
+        h: 2,
         gate: "exit"
+      });
+      decorations.push({
+        type: "gateTorch",
+        x: sx - 1,
+        y: exitRoom.y + exitRoom.h - 2
+      });
+      decorations.push({
+        type: "gateTorch",
+        x: sx + sw,
+        y: exitRoom.y + exitRoom.h - 2
       });
     }
     return decorations;
@@ -698,7 +744,7 @@ window.MazeGen = (function () {
       return Array(cols).fill(TILE.WALL);
     });
 
-    const margin = Math.max(3, Math.floor(cols * 0.035));
+    const margin = 4;
     const root = {
       x: margin,
       y: margin,
@@ -1046,7 +1092,8 @@ window.MazeGen = (function () {
     }
 
     const torches = [];
-    const torchTarget = 12 + params.level * 2;
+    // ~1–2 warm sconces per room so each chamber glows like the refs
+    const torchTarget = Math.max(10, Math.round(rooms.length * 1.6) + params.level);
     const torchCandidates = [];
     for (let y = 1; y < rows - 1; y++) {
       for (let x = 1; x < cols - 1; x++) {
@@ -1056,6 +1103,7 @@ window.MazeGen = (function () {
         if (grid[y][x - 1] === TILE.WALL) wallN++;
         if (grid[y + 1][x] === TILE.WALL) wallN++;
         if (grid[y - 1][x] === TILE.WALL) wallN++;
+        // Prefer wall-adjacent cells that are not room centers
         if (wallN >= 1) torchCandidates.push({ x: x, y: y });
       }
     }
@@ -1065,7 +1113,7 @@ window.MazeGen = (function () {
       torchCandidates[i] = torchCandidates[j];
       torchCandidates[j] = tmp;
     }
-    const torchSpacing = Math.max(4, Math.floor(cols / 40));
+    const torchSpacing = 7;
     for (let ti = 0; ti < torchCandidates.length; ti++) {
       if (torches.length >= torchTarget) break;
       const c = torchCandidates[ti];
@@ -1079,6 +1127,24 @@ window.MazeGen = (function () {
       if (!ok) continue;
       torches.push({ x: c.x, y: c.y });
       decorations.push({ type: "sconce", x: c.x, y: c.y });
+    }
+    // Ensure gate flanking torch cells are lit
+    for (let di = 0; di < decorations.length; di++) {
+      const d = decorations[di];
+      if (d.type !== "gateTorch") continue;
+      if (d.y < 1 || d.x < 1 || d.y >= rows - 1 || d.x >= cols - 1) continue;
+      if (grid[d.y][d.x] === TILE.WALL) continue;
+      let exists = false;
+      for (let t = 0; t < torches.length; t++) {
+        if (torches[t].x === d.x && torches[t].y === d.y) {
+          exists = true;
+          break;
+        }
+      }
+      if (!exists) {
+        torches.push({ x: d.x, y: d.y });
+        decorations.push({ type: "sconce", x: d.x, y: d.y });
+      }
     }
 
     const regionAt = Array.from({ length: rows }, function () {

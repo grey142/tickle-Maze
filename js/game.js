@@ -27,8 +27,8 @@
   const FLASH_CONE_DEG = 60;
   const FLASH_HALF = (FLASH_CONE_DEG * Math.PI) / 180 / 2;
   const FLASH_COS = Math.cos(FLASH_HALF);
-  const AMBIENT_DARK = 0.7056; // ~2% brighter than 0.72
-  const TORCH_RADIUS = 3.2;
+  const AMBIENT_DARK = 0.68; // warmer room read vs refs
+  const TORCH_RADIUS = 4.2;
 
   // Room-locked camera: soft follow inside current region
   const CAM_EDGE_FOLLOW = 0.55;
@@ -1302,75 +1302,124 @@
         const sy = (y - camera.y) * CELL;
         const t = maze.grid[y][x];
         if (t === TILE.WALL) {
-          // Faux-3D stone brick: top face + vertical thickness
-          const wallH = Math.floor(CELL * 0.28);
+          // Faux-3D weathered stone brick (ref: gray-brown top + dark vertical face)
+          const wallH = Math.floor(CELL * 0.32);
           const topY = sy - wallH;
-          // Top face (lighter brick plate)
-          ctx.fillStyle = "#3d4558";
+          const shade = ((x * 5 + y * 11) & 3);
+          const topBase = shade === 0 ? "#5a5348" : shade === 1 ? "#4e4840" : shade === 2 ? "#635c50" : "#524c44";
+          const topLite = shade === 0 ? "#6e6658" : shade === 1 ? "#625a4e" : shade === 2 ? "#766e60" : "#686054";
+          // Footprint under raised top
+          ctx.fillStyle = "#1a1714";
+          ctx.fillRect(sx, sy, CELL, CELL);
+          // Top face
+          ctx.fillStyle = topBase;
           ctx.fillRect(sx, topY, CELL, CELL);
-          ctx.fillStyle = "#4a5368";
+          ctx.fillStyle = topLite;
           ctx.fillRect(sx + 1 * PX, topY + 1 * PX, CELL - 2 * PX, CELL - 2 * PX);
-          // Brick pattern on top
-          ctx.strokeStyle = "rgba(18, 16, 28, 0.55)";
-          ctx.lineWidth = 1;
+          // Irregular brick courses on top
+          ctx.strokeStyle = "rgba(22, 18, 14, 0.55)";
+          ctx.lineWidth = 1.25;
           ctx.beginPath();
-          ctx.moveTo(sx, topY + CELL / 2);
-          ctx.lineTo(sx + CELL, topY + CELL / 2);
-          if ((x + Math.floor(y / 2)) % 2 === 0) {
-            ctx.moveTo(sx + CELL / 2, topY);
-            ctx.lineTo(sx + CELL / 2, topY + CELL / 2);
-          } else {
-            ctx.moveTo(sx + CELL / 2, topY + CELL / 2);
-            ctx.lineTo(sx + CELL / 2, topY + CELL);
-          }
+          ctx.moveTo(sx, topY + CELL * 0.33);
+          ctx.lineTo(sx + CELL, topY + CELL * 0.33);
+          ctx.moveTo(sx, topY + CELL * 0.66);
+          ctx.lineTo(sx + CELL, topY + CELL * 0.66);
+          const brickOff = ((x + Math.floor(y / 2)) % 2) * (CELL / 2);
+          ctx.moveTo(sx + brickOff, topY);
+          ctx.lineTo(sx + brickOff, topY + CELL * 0.33);
+          ctx.moveTo(sx + CELL / 2 - brickOff + CELL / 2, topY + CELL * 0.33);
+          ctx.lineTo(sx + CELL / 2 - brickOff + CELL / 2, topY + CELL * 0.66);
+          ctx.moveTo(sx + brickOff, topY + CELL * 0.66);
+          ctx.lineTo(sx + brickOff, topY + CELL);
           ctx.stroke();
-          // Moss / wear flecks
-          if ((x * 3 + y * 7) % 11 === 0) {
-            ctx.fillStyle = "rgba(90, 140, 100, 0.22)";
-            ctx.fillRect(sx + 4 * PX, topY + 4 * PX, 6 * PX, 4 * PX);
+          // Wear / lichen flecks
+          if ((x * 3 + y * 7) % 9 === 0) {
+            ctx.fillStyle = "rgba(110, 130, 90, 0.18)";
+            ctx.fillRect(sx + 5 * PX, topY + 6 * PX, 8 * PX, 5 * PX);
           }
-          // Vertical south face when open space below (readable 3D edge)
-          const below =
-            y + 1 >= maze.rows ? TILE.FLOOR : maze.grid[y + 1][x];
+          if ((x * 5 + y) % 13 === 0) {
+            ctx.fillStyle = "rgba(30, 26, 22, 0.28)";
+            ctx.fillRect(sx + 12 * PX, topY + 14 * PX, 6 * PX, 4 * PX);
+          }
+          // Vertical south face when open space below
+          const below = y + 1 >= maze.rows ? TILE.FLOOR : maze.grid[y + 1][x];
           if (below !== TILE.WALL) {
-            ctx.fillStyle = "#1e2230";
+            ctx.fillStyle = "#2a2620";
             ctx.fillRect(sx, sy + CELL - wallH, CELL, wallH);
-            ctx.fillStyle = "#2a3040";
+            ctx.fillStyle = "#3a342c";
             ctx.fillRect(sx + 1 * PX, sy + CELL - wallH, CELL - 2 * PX, wallH);
-            // Horizontal mortar on face
-            ctx.strokeStyle = "rgba(8, 8, 14, 0.5)";
+            ctx.strokeStyle = "rgba(12, 10, 8, 0.55)";
             ctx.beginPath();
-            ctx.moveTo(sx, sy + CELL - wallH / 2);
-            ctx.lineTo(sx + CELL, sy + CELL - wallH / 2);
+            ctx.moveTo(sx, sy + CELL - wallH * 0.55);
+            ctx.lineTo(sx + CELL, sy + CELL - wallH * 0.55);
+            ctx.stroke();
+            // Mortar bricks on face
+            ctx.beginPath();
+            ctx.moveTo(sx + CELL * 0.35, sy + CELL - wallH);
+            ctx.lineTo(sx + CELL * 0.35, sy + CELL);
+            ctx.moveTo(sx + CELL * 0.7, sy + CELL - wallH);
+            ctx.lineTo(sx + CELL * 0.7, sy + CELL);
             ctx.stroke();
           }
-          // Fill the "footprint" under the raised top so room-lock void doesn't show through
-          ctx.fillStyle = "#151820";
-          ctx.fillRect(sx, sy, CELL, CELL);
         } else {
-          // Sand + cobblestone mix floor (underground tunnel)
+          // Sand + irregular cobblestone floor (ref: tan sand with scattered stones)
           const sandA = (x * 17 + y * 31) & 3;
-          ctx.fillStyle = sandA === 0 ? "#b8956a" : sandA === 1 ? "#c4a574" : sandA === 2 ? "#a6845c" : "#bc9a6e";
+          ctx.fillStyle =
+            sandA === 0 ? "#c9a878" : sandA === 1 ? "#d4b484" : sandA === 2 ? "#b89568" : "#c8a674";
           ctx.fillRect(sx, sy, CELL, CELL);
-          // Cobble patches
-          const cobble = ((x * 13) ^ (y * 29)) % 5;
-          if (cobble < 3) {
-            ctx.fillStyle = cobble === 0 ? "rgba(90, 85, 80, 0.45)" : "rgba(110, 100, 95, 0.35)";
-            const ox = ((x * 7) % 5) * PX;
-            const oy = ((y * 11) % 5) * PX;
+          // Soft sand grain
+          ctx.fillStyle = "rgba(255, 236, 200, 0.07)";
+          ctx.fillRect(sx, sy, CELL, CELL);
+          const cobble = ((x * 13) ^ (y * 29)) % 7;
+          if (cobble < 4) {
+            const ox = ((x * 7 + y) % 9) * PX;
+            const oy = ((y * 11 + x) % 9) * PX;
+            const cw = CELL - 18 * PX - ((x * 3) % 5) * PX;
+            const ch = CELL - 20 * PX - ((y * 5) % 4) * PX;
+            ctx.fillStyle =
+              cobble === 0
+                ? "rgba(95, 88, 78, 0.5)"
+                : cobble === 1
+                  ? "rgba(120, 110, 98, 0.42)"
+                  : cobble === 2
+                    ? "rgba(85, 78, 70, 0.38)"
+                    : "rgba(105, 98, 88, 0.35)";
             ctx.beginPath();
-            ctx.roundRect
-              ? ctx.roundRect(sx + 4 * PX + ox, sy + 4 * PX + oy, CELL - 14 * PX, CELL - 14 * PX, 4 * PX)
-              : ctx.rect(sx + 4 * PX + ox, sy + 4 * PX + oy, CELL - 14 * PX, CELL - 14 * PX);
+            if (ctx.roundRect) ctx.roundRect(sx + 5 * PX + ox * 0.4, sy + 5 * PX + oy * 0.4, cw, ch, 5 * PX);
+            else ctx.rect(sx + 5 * PX + ox * 0.4, sy + 5 * PX + oy * 0.4, cw, ch);
             ctx.fill();
-            ctx.strokeStyle = "rgba(40, 35, 30, 0.25)";
+            ctx.strokeStyle = "rgba(45, 38, 30, 0.28)";
             ctx.lineWidth = 1;
             ctx.stroke();
+            // Stone highlight
+            ctx.fillStyle = "rgba(220, 205, 175, 0.12)";
+            ctx.fillRect(sx + 7 * PX + ox * 0.4, sy + 7 * PX + oy * 0.4, cw * 0.45, ch * 0.3);
           }
-          // Fine grit
-          if ((x + y) % 2 === 0) {
-            ctx.fillStyle = "rgba(255, 240, 200, 0.06)";
-            ctx.fillRect(sx, sy, CELL, CELL);
+          // Doorway arch hint: floor tile with walls on both sides of a passage
+          const nW = y > 0 && maze.grid[y - 1][x] === TILE.WALL;
+          const sW = y < maze.rows - 1 && maze.grid[y + 1][x] === TILE.WALL;
+          const eW = x < maze.cols - 1 && maze.grid[y][x + 1] === TILE.WALL;
+          const wW = x > 0 && maze.grid[y][x - 1] === TILE.WALL;
+          const isVDoor = eW && wW && !nW && !sW;
+          const isHDoor = nW && sW && !eW && !wW;
+          if (isVDoor || isHDoor) {
+            ctx.strokeStyle = "rgba(70, 62, 52, 0.55)";
+            ctx.lineWidth = 3 * PX;
+            ctx.beginPath();
+            if (isVDoor) {
+              ctx.moveTo(sx + 4 * PX, sy + CELL);
+              ctx.lineTo(sx + 4 * PX, sy + CELL * 0.4);
+              ctx.quadraticCurveTo(sx + CELL / 2, sy + 2 * PX, sx + CELL - 4 * PX, sy + CELL * 0.4);
+              ctx.lineTo(sx + CELL - 4 * PX, sy + CELL);
+            } else {
+              ctx.moveTo(sx, sy + 4 * PX);
+              ctx.lineTo(sx + CELL * 0.4, sy + 4 * PX);
+              ctx.quadraticCurveTo(sx + CELL - 2 * PX, sy + CELL / 2, sx + CELL * 0.4, sy + CELL - 4 * PX);
+              ctx.lineTo(sx, sy + CELL - 4 * PX);
+            }
+            ctx.stroke();
+            ctx.fillStyle = "rgba(20, 16, 12, 0.18)";
+            ctx.fillRect(sx + 6 * PX, sy + 6 * PX, CELL - 12 * PX, CELL - 12 * PX);
           }
 
           if (t === TILE.EXIT) {
@@ -1511,25 +1560,58 @@
           const fh = (d.h || 1) * CELL;
           if (sx + fw < -4 || sy + fh < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
             continue;
-          // Soft silhouette against the wall — does not block (floor tile stays walkable)
-          ctx.fillStyle = "rgba(40, 28, 55, 0.7)";
-          ctx.fillRect(sx + 3 * PX, sy + 3 * PX, fw - 6 * PX, fh - 6 * PX);
-          ctx.fillStyle = "rgba(120, 80, 140, 0.25)";
           if (d.style === 0) {
-            // cabinet / bookshelf
-            ctx.fillRect(sx + 5 * PX, sy + 5 * PX, fw - 10 * PX, fh - 10 * PX);
-            ctx.strokeStyle = "rgba(180, 140, 200, 0.3)";
-            ctx.strokeRect(sx + 5 * PX, sy + 5 * PX, fw - 10 * PX, fh - 10 * PX);
+            // Dark wood bookshelf with aged books (ref side décor)
+            ctx.fillStyle = "#3a2a1c";
+            ctx.fillRect(sx + 4 * PX, sy + 2 * PX, fw - 8 * PX, fh - 4 * PX);
+            ctx.fillStyle = "#2a1c12";
+            ctx.fillRect(sx + 6 * PX, sy + 4 * PX, fw - 12 * PX, fh - 8 * PX);
+            const shelves = Math.max(2, Math.floor((fh - 8 * PX) / (10 * PX)));
+            for (let si = 0; si < shelves; si++) {
+              const yy = sy + 6 * PX + si * ((fh - 10 * PX) / shelves);
+              ctx.fillStyle = "#4a3424";
+              ctx.fillRect(sx + 6 * PX, yy + 7 * PX, fw - 12 * PX, 2 * PX);
+              const books = 3 + ((d.x + d.y + si) % 3);
+              for (let bi = 0; bi < books; bi++) {
+                const bx = sx + 8 * PX + bi * ((fw - 16 * PX) / books);
+                const hues = ["#6b3a2a", "#2a3a5a", "#5a4a2a", "#3a2a4a", "#4a2a2a"];
+                ctx.fillStyle = hues[(d.x + bi + si) % hues.length];
+                ctx.fillRect(bx, yy, Math.max(3 * PX, (fw - 16 * PX) / books - 2 * PX), 7 * PX);
+              }
+            }
+            ctx.strokeStyle = "rgba(90, 70, 45, 0.7)";
+            ctx.lineWidth = 2 * PX;
+            ctx.strokeRect(sx + 4 * PX, sy + 2 * PX, fw - 8 * PX, fh - 4 * PX);
           } else if (d.style === 1) {
-            // table / bench
-            ctx.fillRect(sx + 4 * PX, sy + fh / 2 - 3 * PX, fw - 8 * PX, 6 * PX);
-            ctx.fillRect(sx + 6 * PX, sy + 6 * PX, 3 * PX, fh - 10 * PX);
-            ctx.fillRect(sx + fw - 9 * PX, sy + 6 * PX, 3 * PX, fh - 10 * PX);
+            // Cabinet / chest of drawers
+            ctx.fillStyle = "#3d2c1e";
+            ctx.fillRect(sx + 5 * PX, sy + 4 * PX, fw - 10 * PX, fh - 8 * PX);
+            ctx.fillStyle = "#2c1e14";
+            ctx.fillRect(sx + 7 * PX, sy + 6 * PX, fw - 14 * PX, fh - 12 * PX);
+            const drawers = 2 + ((d.x + d.y) % 2);
+            for (let di = 0; di < drawers; di++) {
+              const dy = sy + 8 * PX + di * ((fh - 16 * PX) / drawers);
+              ctx.strokeStyle = "rgba(120, 90, 55, 0.55)";
+              ctx.lineWidth = 1.5 * PX;
+              ctx.strokeRect(sx + 8 * PX, dy, fw - 16 * PX, (fh - 16 * PX) / drawers - 2 * PX);
+              ctx.fillStyle = "#c9a227";
+              ctx.beginPath();
+              ctx.arc(sx + fw / 2, dy + ((fh - 16 * PX) / drawers - 2 * PX) / 2, 2 * PX, 0, Math.PI * 2);
+              ctx.fill();
+            }
+            ctx.strokeStyle = "rgba(100, 75, 45, 0.65)";
+            ctx.lineWidth = 2 * PX;
+            ctx.strokeRect(sx + 5 * PX, sy + 4 * PX, fw - 10 * PX, fh - 8 * PX);
           } else {
-            // urn / pedestal
+            // Small pedestal / urn accent
+            ctx.fillStyle = "#4a3a2c";
+            ctx.fillRect(sx + fw * 0.3, sy + fh * 0.55, fw * 0.4, fh * 0.35);
+            ctx.fillStyle = "#5a4a3a";
             ctx.beginPath();
-            ctx.ellipse(sx + fw / 2, sy + fh / 2, Math.min(fw, fh) * 0.28, Math.min(fw, fh) * 0.35, 0, 0, Math.PI * 2);
+            ctx.ellipse(sx + fw / 2, sy + fh * 0.45, fw * 0.22, fh * 0.28, 0, 0, Math.PI * 2);
             ctx.fill();
+            ctx.fillStyle = "#c9a227";
+            ctx.fillRect(sx + fw * 0.42, sy + fh * 0.2, fw * 0.16, fh * 0.12);
           }
         } else if (d.type === "banner") {
           const sx = (d.x - camera.x) * CELL;
@@ -1580,64 +1662,109 @@
           const ph = (d.h || 1) * CELL;
           if (sx + pw < -4 || sy + ph < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
             continue;
-          ctx.fillStyle = "rgba(120, 80, 40, 0.9)";
-          ctx.fillRect(sx + 4 * PX, sy + 4 * PX, pw - 8 * PX, ph - 8 * PX);
-          ctx.fillStyle = "rgba(40, 28, 50, 0.85)";
-          ctx.fillRect(sx + 8 * PX, sy + 8 * PX, pw - 16 * PX, ph - 16 * PX);
+          // Ornate gold frame + canvas (ref paintings)
+          ctx.fillStyle = "#c9a227";
+          ctx.fillRect(sx + 3 * PX, sy + 3 * PX, pw - 6 * PX, ph - 6 * PX);
+          ctx.fillStyle = "#e8c84a";
+          ctx.fillRect(sx + 5 * PX, sy + 5 * PX, pw - 10 * PX, ph - 10 * PX);
+          ctx.fillStyle = "#8b6914";
+          ctx.strokeStyle = "#8b6914";
+          ctx.lineWidth = 1.5 * PX;
+          ctx.strokeRect(sx + 4 * PX, sy + 4 * PX, pw - 8 * PX, ph - 8 * PX);
+          ctx.fillStyle = "#2a2230";
+          ctx.fillRect(sx + 9 * PX, sy + 9 * PX, pw - 18 * PX, ph - 18 * PX);
           const theme = d.theme || "tickle";
-          ctx.fillStyle =
-            theme === "feather"
-              ? "rgba(200, 220, 255, 0.7)"
-              : theme === "laugh"
-                ? "rgba(255, 200, 120, 0.7)"
-                : theme === "ribbon"
-                  ? "rgba(255, 120, 180, 0.7)"
-                  : "rgba(255, 180, 220, 0.7)";
+          // Soft painted vignette
+          const pg = ctx.createRadialGradient(
+            sx + pw / 2,
+            sy + ph / 2,
+            2 * PX,
+            sx + pw / 2,
+            sy + ph / 2,
+            Math.min(pw, ph) * 0.4
+          );
+          if (theme === "feather") {
+            pg.addColorStop(0, "rgba(210, 230, 255, 0.85)");
+            pg.addColorStop(1, "rgba(60, 80, 120, 0.5)");
+          } else if (theme === "laugh") {
+            pg.addColorStop(0, "rgba(255, 210, 140, 0.85)");
+            pg.addColorStop(1, "rgba(120, 70, 40, 0.5)");
+          } else if (theme === "ribbon") {
+            pg.addColorStop(0, "rgba(255, 150, 190, 0.85)");
+            pg.addColorStop(1, "rgba(100, 40, 70, 0.5)");
+          } else {
+            pg.addColorStop(0, "rgba(255, 190, 220, 0.85)");
+            pg.addColorStop(1, "rgba(90, 40, 80, 0.5)");
+          }
+          ctx.fillStyle = pg;
+          ctx.fillRect(sx + 9 * PX, sy + 9 * PX, pw - 18 * PX, ph - 18 * PX);
+          // Simple figure oval
+          ctx.fillStyle = "rgba(255, 240, 230, 0.35)";
           ctx.beginPath();
-          ctx.ellipse(sx + pw / 2, sy + ph / 2, pw * 0.22, ph * 0.28, 0, 0, Math.PI * 2);
+          ctx.ellipse(sx + pw / 2, sy + ph * 0.42, pw * 0.14, ph * 0.16, 0, 0, Math.PI * 2);
           ctx.fill();
-          ctx.strokeStyle = "rgba(220, 180, 80, 0.55)";
-          ctx.lineWidth = 2 * PX;
-          ctx.strokeRect(sx + 5 * PX, sy + 5 * PX, pw - 10 * PX, ph - 10 * PX);
-        } else if (d.type === "entranceGate") {
+          ctx.fillStyle = "rgba(40, 30, 50, 0.45)";
+          ctx.beginPath();
+          ctx.ellipse(sx + pw / 2, sy + ph * 0.62, pw * 0.2, ph * 0.18, 0, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (d.type === "entranceGate" || d.type === "exitGate") {
           const sx = (d.x - camera.x) * CELL;
           const sy = (d.y - camera.y) * CELL;
           const gw = (d.w || 4) * CELL;
           const gh = (d.h || 2) * CELL;
           if (sx + gw < -4 || sy + gh < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
             continue;
-          ctx.fillStyle = "rgba(60, 50, 40, 0.75)";
+          const isExit = d.type === "exitGate";
+          const unlocked = !isExit || keysCollected >= keysRequired;
+          // Stone arch frame
+          ctx.fillStyle = "#4a443c";
+          ctx.fillRect(sx, sy, gw, gh);
+          ctx.fillStyle = "#5c5448";
           ctx.fillRect(sx + 2 * PX, sy + 2 * PX, gw - 4 * PX, gh - 4 * PX);
-          ctx.strokeStyle = "rgba(200, 170, 100, 0.7)";
+          // Arch opening
+          ctx.fillStyle = unlocked ? "rgba(30, 24, 18, 0.85)" : "rgba(18, 14, 12, 0.95)";
+          ctx.beginPath();
+          ctx.moveTo(sx + 8 * PX, sy + gh);
+          ctx.lineTo(sx + 8 * PX, sy + gh * 0.42);
+          ctx.quadraticCurveTo(sx + gw / 2, sy + 4 * PX, sx + gw - 8 * PX, sy + gh * 0.42);
+          ctx.lineTo(sx + gw - 8 * PX, sy + gh);
+          ctx.closePath();
+          ctx.fill();
+          // Portcullis grate
+          ctx.strokeStyle = unlocked ? "rgba(70, 80, 90, 0.45)" : "rgba(40, 45, 55, 0.9)";
+          ctx.lineWidth = 2.5 * PX;
+          ctx.beginPath();
+          const bars = Math.max(4, Math.floor(gw / (10 * PX)));
+          for (let bi = 1; bi < bars; bi++) {
+            const bx = sx + 10 * PX + ((gw - 20 * PX) * bi) / bars;
+            ctx.moveTo(bx, sy + gh * 0.28);
+            ctx.lineTo(bx, sy + gh - 2 * PX);
+          }
+          for (let hi = 1; hi <= 3; hi++) {
+            const hy = sy + gh * 0.28 + ((gh * 0.65) * hi) / 4;
+            ctx.moveTo(sx + 10 * PX, hy);
+            ctx.lineTo(sx + gw - 10 * PX, hy);
+          }
+          ctx.stroke();
+          // Gold trim on arch
+          ctx.strokeStyle = "rgba(201, 162, 39, 0.75)";
           ctx.lineWidth = 3 * PX;
           ctx.beginPath();
-          ctx.moveTo(sx + 6 * PX, sy + gh - 4 * PX);
-          ctx.lineTo(sx + 6 * PX, sy + gh * 0.45);
-          ctx.quadraticCurveTo(sx + gw / 2, sy + 2 * PX, sx + gw - 6 * PX, sy + gh * 0.45);
-          ctx.lineTo(sx + gw - 6 * PX, sy + gh - 4 * PX);
+          ctx.moveTo(sx + 6 * PX, sy + gh - 2 * PX);
+          ctx.lineTo(sx + 6 * PX, sy + gh * 0.4);
+          ctx.quadraticCurveTo(sx + gw / 2, sy + 2 * PX, sx + gw - 6 * PX, sy + gh * 0.4);
+          ctx.lineTo(sx + gw - 6 * PX, sy + gh - 2 * PX);
           ctx.stroke();
-          ctx.fillStyle = "rgba(180, 220, 255, 0.2)";
-          ctx.fillRect(sx + 10 * PX, sy + gh * 0.4, gw - 20 * PX, gh * 0.45);
-          ctx.fillStyle = "#c4b896";
-          ctx.font = "bold " + Math.round(8 * PX) + "px sans-serif";
+          ctx.fillStyle = isExit ? (unlocked ? "#5eead4" : "#fbbf24") : "#c4b896";
+          ctx.font = "bold " + Math.round(9 * PX) + "px sans-serif";
           ctx.textAlign = "center";
-          ctx.fillText("ENTRANCE", sx + gw / 2, sy + gh - 6 * PX);
-        } else if (d.type === "stairs") {
-          const sx = (d.x - camera.x) * CELL;
-          const sy = (d.y - camera.y) * CELL;
-          const sw = (d.w || 3) * CELL;
-          const sh = (d.h || 2) * CELL;
-          if (sx + sw < -4 || sy + sh < -4 || sx > canvas.width + 4 || sy > canvas.height + 4)
-            continue;
-          const steps = 4;
-          for (let si = 0; si < steps; si++) {
-            const t = si / steps;
-            ctx.fillStyle = si % 2 === 0 ? "rgba(90, 75, 70, 0.55)" : "rgba(70, 58, 55, 0.5)";
-            const yy = sy + t * sh;
-            ctx.fillRect(sx + 2 * PX, yy, sw - 4 * PX, sh / steps + 1);
-            ctx.strokeStyle = "rgba(160, 140, 120, 0.35)";
-            ctx.strokeRect(sx + 2 * PX, yy, sw - 4 * PX, sh / steps);
-          }
+          ctx.fillText(
+            isExit ? (unlocked ? "EXIT" : "LOCKED") : "ENTRANCE",
+            sx + gw / 2,
+            sy + gh - 5 * PX
+          );
+        } else if (d.type === "gateTorch" || d.type === "stairs") {
+          // gateTorch drawn via torch list; stairs legacy no-op (gates replace them)
         }
       }
     }
@@ -1650,15 +1777,23 @@
         if (sx < -CELL || sy < -CELL || sx > canvas.width + CELL || sy > canvas.height + CELL)
           continue;
         const flicker = torchFlicker * (0.92 + Math.sin(animTime * 9 + t.x * 1.7) * 0.08);
-        ctx.fillStyle = "#3a2a20";
-        ctx.fillRect(sx + CELL / 2 - 3 * PX, sy + 4 * PX, 6 * PX, 10 * PX);
-        ctx.fillStyle = `rgba(255,180,60,${0.85 * flicker})`;
+        // Wall bracket
+        ctx.fillStyle = "#2a2218";
+        ctx.fillRect(sx + CELL / 2 - 4 * PX, sy + 10 * PX, 8 * PX, 5 * PX);
+        ctx.fillStyle = "#4a3a28";
+        ctx.fillRect(sx + CELL / 2 - 2.5 * PX, sy + 6 * PX, 5 * PX, 12 * PX);
+        // Flame body
+        ctx.fillStyle = `rgba(255,140,40,${0.55 * flicker})`;
         ctx.beginPath();
-        ctx.ellipse(sx + CELL / 2, sy + 6 * PX, 4 * PX * flicker, 7 * PX * flicker, 0, 0, Math.PI * 2);
+        ctx.ellipse(sx + CELL / 2, sy + 5 * PX, 7 * PX * flicker, 10 * PX * flicker, 0, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = `rgba(255,240,180,${0.9 * flicker})`;
+        ctx.fillStyle = `rgba(255,190,60,${0.9 * flicker})`;
         ctx.beginPath();
-        ctx.ellipse(sx + CELL / 2, sy + 5 * PX, 2 * PX, 3.5 * PX, 0, 0, Math.PI * 2);
+        ctx.ellipse(sx + CELL / 2, sy + 4 * PX, 4.5 * PX * flicker, 8 * PX * flicker, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = `rgba(255,245,200,${0.95 * flicker})`;
+        ctx.beginPath();
+        ctx.ellipse(sx + CELL / 2, sy + 3 * PX, 2.2 * PX, 4 * PX, 0, 0, Math.PI * 2);
         ctx.fill();
       }
     }
