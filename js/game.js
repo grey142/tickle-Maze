@@ -38,15 +38,9 @@
   const CAM_ROOM_PAD = 0.5; // mid-wall (~50% into boundary wall) so doorways stay visible
   const CAM_ROOM_TRANSITION = 5.5;
 
-  // Oblique / elevated side view (simulation stays tile-space; drawing projects)
-  // screenX = dx*kx + dy*skew, screenY = dy*ky — look into the room from the south
-  const ISO = {
-    kx: 74, // tile width on screen
-    ky: 56, // foreshortened depth (elevated angle)
-    skew: 34, // side angle (y pushes x)
-    wallH: 68, // vertical wall face height (px)
-    padTop: 72 // leave room for north walls rising above floor
-  };
+  // Classic top-down: screen = (world - camera) * CELL
+  // Light faux-3D wall thickness (still reads overhead, not angled)
+  const WALL_H = Math.floor(CELL * 0.28);
 
   // Succubus sight
   const SUCC_LOS_RANGE = 11;
@@ -1589,108 +1583,19 @@
   }
 
   function getViewTiles() {
-    // Approximate orthographic tile span (used for coarse follow deadzone only)
-    const viewH = (canvas.height - ISO.padTop) / ISO.ky;
-    const viewW = canvas.width / ISO.kx;
-    return { viewW, viewH };
+    return { viewW: canvas.width / CELL, viewH: canvas.height / CELL };
   }
 
-  /** Floor-plane projection: angled elevated look into the room (south near side open). */
+  /** Classic top-down: screen = (world - camera) * CELL */
   function worldToScreen(wx, wy) {
-    const dx = wx - camera.x;
-    const dy = wy - camera.y;
     return {
-      x: dx * ISO.kx + dy * ISO.skew,
-      y: dy * ISO.ky + ISO.padTop
+      x: (wx - camera.x) * CELL,
+      y: (wy - camera.y) * CELL
     };
-  }
-
-  /** Inverse of worldToScreen for a target screen point (solve for world under camera). */
-  function screenToWorldDelta(sx, sy) {
-    // sx = dx*kx + dy*skew; sy = dy*ky + padTop
-    const dy = (sy - ISO.padTop) / ISO.ky;
-    const dx = (sx - dy * ISO.skew) / ISO.kx;
-    return { dx, dy };
   }
 
   function depthOf(wx, wy) {
     return wy * 1000 + wx;
-  }
-
-  function regionPadBounds(reg) {
-    if (!reg) return null;
-    return {
-      left: reg.x - CAM_ROOM_PAD,
-      top: reg.y - CAM_ROOM_PAD - 0.35,
-      right: reg.x + reg.w + CAM_ROOM_PAD,
-      bottom: reg.y + reg.h + CAM_ROOM_PAD * 0.35
-    };
-  }
-
-  /** Project room corners with a candidate camera; return screen AABB. */
-  function projectBoundsWithCam(b, camX, camY) {
-    const corners = [
-      [b.left, b.top],
-      [b.right, b.top],
-      [b.left, b.bottom],
-      [b.right, b.bottom]
-    ];
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const [wx, wy] of corners) {
-      const dx = wx - camX;
-      const dy = wy - camY;
-      const sx = dx * ISO.kx + dy * ISO.skew;
-      const sy = dy * ISO.ky + ISO.padTop;
-      if (sx < minX) minX = sx;
-      if (sy < minY) minY = sy;
-      if (sx > maxX) maxX = sx;
-      if (sy > maxY) maxY = sy;
-    }
-    // Account for north wall height rising above the north edge
-    minY -= ISO.wallH * 0.85;
-    return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
-  }
-
-  /** Camera that places world point (wx,wy) at canvas center. */
-  function cameraCenteringWorld(wx, wy) {
-    const targetSX = canvas.width / 2;
-    const targetSY = canvas.height / 2;
-    const dy = (targetSY - ISO.padTop) / ISO.ky;
-    const dx = (targetSX - dy * ISO.skew) / ISO.kx;
-    return { x: wx - dx, y: wy - dy };
-  }
-
-  /** Camera that centers the projected room AABB on the canvas (iso-correct). */
-  function cameraCenteringRegion(reg) {
-    const b = regionPadBounds(reg);
-    const cx = (b.left + b.right) / 2;
-    const cy = (b.top + b.bottom) / 2;
-    // First guess: center room midpoint on screen
-    let cam = cameraCenteringWorld(cx, cy);
-    // Measure projected AABB and shift camera so AABB center hits screen center
-    for (let i = 0; i < 3; i++) {
-      const bb = projectBoundsWithCam(b, cam.x, cam.y);
-      const midX = (bb.minX + bb.maxX) / 2;
-      const midY = (bb.minY + bb.maxY) / 2;
-      const errX = midX - canvas.width / 2;
-      const errY = midY - canvas.height / 2;
-      // Moving camera +dx,+dy moves screen by -dx*kx - dy*skew, -dy*ky
-      // Solve: -ddx*kx - ddy*skew = -errX  => ddx*kx + ddy*skew = errX
-      //        -ddy*ky = -errY => ddy = errY/ky
-      const ddy = errY / ISO.ky;
-      const ddx = (errX - ddy * ISO.skew) / ISO.kx;
-      cam = { x: cam.x + ddx, y: cam.y + ddy };
-    }
-    return cam;
-  }
-
-  function roomFitsOnScreen(reg) {
-    if (!reg) return false;
-    const b = regionPadBounds(reg);
-    const cam = cameraCenteringRegion(reg);
-    const bb = projectBoundsWithCam(b, cam.x, cam.y);
-    const margin = 18;
-    return bb.w <= canvas.width - margin * 2 && bb.h <= canvas.height - margin * 2;
   }
 
   function clampCameraToRegion(camX, camY, viewW, viewH, reg) {
@@ -1700,34 +1605,25 @@
         y: Math.max(0, Math.min(Math.max(0, maze.rows - viewH), camY))
       };
     }
-    const b = regionPadBounds(reg);
-    const fits = roomFitsOnScreen(reg);
-    if (fits) {
-      // Snap to iso-centered room framing
-      return cameraCenteringRegion(reg);
-    }
-    // Follow mode: keep player near center but clamp so we don't show huge void outside room
-    // Prefer keeping projected room overlapping most of the canvas
+    // Framing box: mid-wall pad so doorways stay visible; keep neighbor rooms off-screen
+    const left = reg.x - CAM_ROOM_PAD;
+    const top = reg.y - CAM_ROOM_PAD;
+    const right = reg.x + reg.w + CAM_ROOM_PAD;
+    const bottom = reg.y + reg.h + CAM_ROOM_PAD;
+    const rw = right - left;
+    const rh = bottom - top;
+
     let x = camX;
     let y = camY;
-    const ideal = cameraCenteringWorld(player.x, player.y);
-    x = ideal.x;
-    y = ideal.y;
-    // Soft clamp: if projected room AABB drifts too far off-screen, pull back
-    const bb = projectBoundsWithCam(b, x, y);
-    const pad = 40;
-    let shiftSX = 0;
-    let shiftSY = 0;
-    if (bb.maxX < canvas.width * 0.35) shiftSX = canvas.width * 0.35 - bb.maxX;
-    if (bb.minX > canvas.width * 0.65) shiftSX = canvas.width * 0.65 - bb.minX;
-    if (bb.maxY < canvas.height * 0.35) shiftSY = canvas.height * 0.35 - bb.maxY;
-    if (bb.minY > canvas.height * 0.65) shiftSY = canvas.height * 0.65 - bb.minY;
-    if (shiftSX || shiftSY) {
-      const ddy = shiftSY / ISO.ky;
-      const ddx = (shiftSX - ddy * ISO.skew) / ISO.kx;
-      // Moving camera opposite to screen shift
-      x -= ddx;
-      y -= ddy;
+    if (viewW >= rw) {
+      x = left + rw / 2 - viewW / 2;
+    } else {
+      x = Math.max(left, Math.min(right - viewW, x));
+    }
+    if (viewH >= rh) {
+      y = top + rh / 2 - viewH / 2;
+    } else {
+      y = Math.max(top, Math.min(bottom - viewH, y));
     }
     return { x, y };
   }
@@ -1736,13 +1632,19 @@
     const { viewW, viewH } = getViewTiles();
     const reg = getRegionAtWorld(player.x, player.y);
     const rid = regionIdOf(reg);
-    const roomFits = roomFitsOnScreen(reg);
+    const roomFits =
+      !!reg &&
+      viewW >= reg.w + CAM_ROOM_PAD * 2 &&
+      viewH >= reg.h + CAM_ROOM_PAD * 2;
 
     if (!camera.initialized) {
-      let cam;
-      if (roomFits && reg) cam = cameraCenteringRegion(reg);
-      else cam = cameraCenteringWorld(player.x, player.y);
-      const clamped = clampCameraToRegion(cam.x, cam.y, viewW, viewH, reg);
+      let cx = player.x - viewW / 2;
+      let cy = player.y - viewH / 2;
+      if (roomFits && reg) {
+        cx = reg.x + reg.w / 2 - viewW / 2;
+        cy = reg.y + reg.h / 2 - viewH / 2;
+      }
+      const clamped = clampCameraToRegion(cx, cy, viewW, viewH, reg);
       camera.x = clamped.x;
       camera.y = clamped.y;
       camera.regionId = rid;
@@ -1758,19 +1660,38 @@
     }
     camera.fitRoom = roomFits;
 
-    let target;
-    if (roomFits && reg) {
-      target = cameraCenteringRegion(reg);
-      // Tiny player bias in world space
-      target.x += (player.x - (reg.x + reg.w / 2)) * 0.04;
-      target.y += (player.y - (reg.y + reg.h / 2)) * 0.04;
-    } else {
-      target = cameraCenteringWorld(player.x, player.y);
+    const halfW = viewW / 2;
+    const halfH = viewH / 2;
+    const deadW = halfW * CAM_EDGE_FOLLOW;
+    const deadH = halfH * CAM_EDGE_FOLLOW;
+
+    const screenX = player.x - camera.x;
+    const screenY = player.y - camera.y;
+    let targetX = camera.x;
+    let targetY = camera.y;
+
+    // Soft follow inside the room when too big for the viewport
+    if (screenX > halfW + deadW) targetX = player.x - (halfW + deadW);
+    else if (screenX < halfW - deadW) targetX = player.x - (halfW - deadW);
+
+    if (screenY > halfH + deadH) targetY = player.y - (halfH + deadH);
+    else if (screenY < halfH - deadH) targetY = player.y - (halfH - deadH);
+
+    // When the whole room fits, center on the room (tiny player bias)
+    if (reg) {
+      const rw = reg.w + CAM_ROOM_PAD * 2;
+      const rh = reg.h + CAM_ROOM_PAD * 2;
+      if (viewW >= rw) {
+        targetX = reg.x + reg.w / 2 - viewW / 2 + (player.x - (reg.x + reg.w / 2)) * 0.15;
+      }
+      if (viewH >= rh) {
+        targetY = reg.y + reg.h / 2 - viewH / 2 + (player.y - (reg.y + reg.h / 2)) * 0.15;
+      }
     }
 
-    const clampedTarget = clampCameraToRegion(target.x, target.y, viewW, viewH, reg);
-    let targetX = clampedTarget.x;
-    let targetY = clampedTarget.y;
+    const clampedTarget = clampCameraToRegion(targetX, targetY, viewW, viewH, reg);
+    targetX = clampedTarget.x;
+    targetY = clampedTarget.y;
 
     const lerpRate = camera.transitioning ? CAM_ROOM_TRANSITION : CAM_LERP;
     const k = 1 - Math.exp(-lerpRate * dt);
@@ -1778,29 +1699,16 @@
     camera.y += (targetY - camera.y) * k;
 
     const hard = clampCameraToRegion(camera.x, camera.y, viewW, viewH, reg);
-    camera.x += (hard.x - camera.x) * Math.min(1, k * 1.5);
-    camera.y += (hard.y - camera.y) * Math.min(1, k * 1.5);
+    camera.x += (hard.x - camera.x) * Math.min(1, k * 1.4);
+    camera.y += (hard.y - camera.y) * Math.min(1, k * 1.4);
 
     if (
       camera.transitioning &&
-      Math.abs(camera.x - targetX) < 0.05 &&
-      Math.abs(camera.y - targetY) < 0.05
+      Math.abs(camera.x - targetX) < 0.04 &&
+      Math.abs(camera.y - targetY) < 0.04
     ) {
       camera.transitioning = false;
     }
-  }
-
-  /** South (near) wall of the current room — hide so we look into the space. */
-  function isNearSouthWall(x, y, reg) {
-    if (y <= 0) return false;
-    if (maze.grid[y][x] !== TILE.WALL) return false;
-    const above = maze.grid[y - 1][x];
-    if (above === TILE.WALL) return false;
-    if (!reg) return true;
-    const n = maze.regionAt[y - 1] && maze.regionAt[y - 1][x];
-    if (n && n.id === reg.id) return true;
-    if (tileVisibleInRegion(x, y - 1, reg) && above !== TILE.WALL) return true;
-    return false;
   }
 
   function fillPoly(c, pts, fill, stroke, lineWidth) {
@@ -2017,61 +1925,54 @@
     const isVDoor = eW && wW && !nW && !sW;
     const isHDoor = nW && sW && !eW && !wW;
     if (isVDoor || isHDoor) {
-      ctx.strokeStyle = "rgba(70, 62, 52, 0.65)";
+      const sx = (x - camera.x) * CELL;
+      const sy = (y - camera.y) * CELL;
+      ctx.strokeStyle = "rgba(70, 62, 52, 0.55)";
       ctx.lineWidth = 3 * PX;
       ctx.beginPath();
       if (isVDoor) {
-        const L = worldToScreen(x + 0.12, y + 1);
-        const R = worldToScreen(x + 0.88, y + 1);
-        const TL = worldToScreen(x + 0.12, y + 0.35);
-        const TR = worldToScreen(x + 0.88, y + 0.35);
-        const top = worldToScreen(x + 0.5, y + 0.05);
-        ctx.moveTo(L.x, L.y);
-        ctx.lineTo(TL.x, TL.y);
-        ctx.quadraticCurveTo(top.x, top.y - ISO.wallH * 0.55, TR.x, TR.y);
-        ctx.lineTo(R.x, R.y);
+        ctx.moveTo(sx + 4 * PX, sy + CELL);
+        ctx.lineTo(sx + 4 * PX, sy + CELL * 0.4);
+        ctx.quadraticCurveTo(sx + CELL / 2, sy + 2 * PX, sx + CELL - 4 * PX, sy + CELL * 0.4);
+        ctx.lineTo(sx + CELL - 4 * PX, sy + CELL);
       } else {
-        const T = worldToScreen(x, y + 0.12);
-        const B = worldToScreen(x, y + 0.88);
-        const TR = worldToScreen(x + 0.35, y + 0.12);
-        const BR = worldToScreen(x + 0.35, y + 0.88);
-        const tip = worldToScreen(x + 0.95, y + 0.5);
-        ctx.moveTo(T.x, T.y);
-        ctx.lineTo(TR.x, TR.y);
-        ctx.quadraticCurveTo(tip.x, tip.y - ISO.wallH * 0.2, BR.x, BR.y);
-        ctx.lineTo(B.x, B.y);
+        ctx.moveTo(sx, sy + 4 * PX);
+        ctx.lineTo(sx + CELL * 0.4, sy + 4 * PX);
+        ctx.quadraticCurveTo(sx + CELL - 2 * PX, sy + CELL / 2, sx + CELL * 0.4, sy + CELL - 4 * PX);
+        ctx.lineTo(sx, sy + CELL - 4 * PX);
       }
       ctx.stroke();
-      fillPoly(ctx, floorQuad(x, y), "rgba(20, 16, 12, 0.14)", null);
+      ctx.fillStyle = "rgba(20, 16, 12, 0.18)";
+      ctx.fillRect(sx + 6 * PX, sy + 6 * PX, CELL - 12 * PX, CELL - 12 * PX);
     }
 
     if (t === TILE.EXIT) {
       const unlocked = keysCollected >= keysRequired;
       const c = worldToScreen(x + 0.5, y + 0.5);
-      const eg = ctx.createRadialGradient(c.x, c.y, 2 * PX, c.x, c.y, ISO.kx);
+      const eg = ctx.createRadialGradient(c.x, c.y, 2 * PX, c.x, c.y, CELL);
       if (unlocked) {
         eg.addColorStop(0, `rgba(94,234,212,${0.75 * torchFlicker})`);
         eg.addColorStop(1, "transparent");
         ctx.fillStyle = eg;
         ctx.beginPath();
-        ctx.arc(c.x, c.y, ISO.kx * 0.7, 0, Math.PI * 2);
+        ctx.arc(c.x, c.y, CELL * 0.7, 0, Math.PI * 2);
         ctx.fill();
         fillPoly(ctx, floorQuad(x, y), "rgba(94,234,212,0.2)", "#5eead4", 2 * PX);
         ctx.fillStyle = "#5eead4";
         ctx.font = "bold " + Math.round(9 * PX) + "px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText("OPEN", c.x, c.y - ISO.wallH * 0.15);
+        ctx.fillText("OPEN", c.x, c.y + 3 * PX);
       } else {
         eg.addColorStop(0, `rgba(251,191,36,${0.45 * torchFlicker})`);
         eg.addColorStop(1, "transparent");
         ctx.fillStyle = eg;
         ctx.beginPath();
-        ctx.arc(c.x, c.y, ISO.kx * 0.7, 0, Math.PI * 2);
+        ctx.arc(c.x, c.y, CELL * 0.7, 0, Math.PI * 2);
         ctx.fill();
-        const gw = ISO.kx * 0.55;
-        const gh = ISO.wallH * 0.85;
+        const gw = CELL * 0.55;
+        const gh = CELL * 0.55;
         const gx = c.x - gw / 2;
-        const gy = c.y - gh;
+        const gy = c.y - gh / 2;
         ctx.fillStyle = "#3a3048";
         ctx.fillRect(gx, gy, gw, gh);
         ctx.strokeStyle = "#fbbf24";
@@ -2175,113 +2076,75 @@
   }
 
   function drawWallTile(x, y, reg) {
-    if (isNearSouthWall(x, y, reg)) {
-      // Classic dungeon cutaway: omit near/south wall (faint stub only)
-      const stub = [
-        worldToScreen(x + 0.05, y + 0.85),
-        worldToScreen(x + 0.95, y + 0.85),
-        worldToScreen(x + 0.95, y + 1),
-        worldToScreen(x + 0.05, y + 1)
-      ];
-      fillPoly(ctx, stub, "rgba(42,38,32,0.35)", "rgba(20,16,12,0.2)", 1);
-      return;
-    }
-
-    const wh = ISO.wallH;
+    // True overhead wall: raised top face + light south extrusion (faux thickness)
+    const sx = (x - camera.x) * CELL;
+    const sy = (y - camera.y) * CELL;
+    const wh = WALL_H;
+    const topY = sy - wh;
     const shade = (x * 5 + y * 11) & 3;
     const topBase = shade === 0 ? "#5a5348" : shade === 1 ? "#4e4840" : shade === 2 ? "#635c50" : "#524c44";
     const topLite = shade === 0 ? "#6e6658" : shade === 1 ? "#625a4e" : shade === 2 ? "#766e60" : "#686054";
-    const faceDark = "#2a2620";
-    const faceMid = "#3a342c";
-    const faceSide = "#322e28";
 
-    const tl = worldToScreen(x, y);
-    const tr = worldToScreen(x + 1, y);
-    const br = worldToScreen(x + 1, y + 1);
-    const bl = worldToScreen(x, y + 1);
-    const tlH = { x: tl.x, y: tl.y - wh };
-    const trH = { x: tr.x, y: tr.y - wh };
-    const brH = { x: br.x, y: br.y - wh };
-    const blH = { x: bl.x, y: bl.y - wh };
+    // Footprint under raised top
+    ctx.fillStyle = "#1a1714";
+    ctx.fillRect(sx, sy, CELL, CELL);
 
-    const nFloor = y > 0 && maze.grid[y - 1][x] !== TILE.WALL;
-    const sFloor = y < maze.rows - 1 && maze.grid[y + 1][x] !== TILE.WALL;
-    const eFloor = x < maze.cols - 1 && maze.grid[y][x + 1] !== TILE.WALL;
-    const wFloor = x > 0 && maze.grid[y][x - 1] !== TILE.WALL;
+    // Top face (overhead stone)
+    ctx.fillStyle = topBase;
+    ctx.fillRect(sx, topY, CELL, CELL);
+    ctx.fillStyle = topLite;
+    ctx.fillRect(sx + 1 * PX, topY + 1 * PX, CELL - 2 * PX, CELL - 2 * PX);
 
-    fillPoly(ctx, [tl, tr, br, bl], "#1a1714", null);
-
-    if (sFloor) {
-      fillPoly(ctx, [bl, br, brH, blH], faceDark, "rgba(12,10,8,0.45)", 1);
-      fillPoly(
-        ctx,
-        [
-          { x: bl.x + 1, y: bl.y - 1 },
-          { x: br.x - 1, y: br.y - 1 },
-          { x: brH.x - 1, y: brH.y + 1 },
-          { x: blH.x + 1, y: blH.y + 1 }
-        ],
-        faceMid,
-        null
-      );
-    }
-    if (eFloor) {
-      fillPoly(ctx, [tr, br, brH, trH], faceSide, "rgba(12,10,8,0.4)", 1);
-    }
-    if (wFloor) {
-      fillPoly(ctx, [tl, bl, blH, tlH], "#2e2a24", "rgba(12,10,8,0.4)", 1);
-    }
-    if (nFloor) {
-      fillPoly(ctx, [tl, tr, trH, tlH], faceMid, "rgba(12,10,8,0.5)", 1);
-      ctx.strokeStyle = "rgba(12, 10, 8, 0.45)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (let i = 1; i <= 3; i++) {
-        const tt = i / 4;
-        ctx.moveTo(tl.x, tl.y - wh * tt);
-        ctx.lineTo(tr.x, tr.y - wh * tt);
-      }
-      const mx = (tl.x + tr.x) / 2;
-      ctx.moveTo(mx, tl.y);
-      ctx.lineTo(mx, tl.y - wh);
-      ctx.stroke();
-    }
-
-    fillPoly(ctx, [tlH, trH, brH, blH], topBase, "rgba(22,18,14,0.55)", 1.1);
-    fillPoly(
-      ctx,
-      [
-        { x: tlH.x + 2, y: tlH.y + 2 },
-        { x: trH.x - 2, y: trH.y + 2 },
-        { x: brH.x - 2, y: brH.y - 2 },
-        { x: blH.x + 2, y: blH.y - 2 }
-      ],
-      topLite,
-      null
-    );
-    ctx.strokeStyle = "rgba(22, 18, 14, 0.5)";
-    ctx.lineWidth = 1;
+    // Brick courses on top
+    ctx.strokeStyle = "rgba(22, 18, 14, 0.55)";
+    ctx.lineWidth = 1.25;
     ctx.beginPath();
-    const midN = { x: (tlH.x + trH.x) / 2, y: (tlH.y + trH.y) / 2 };
-    const midS = { x: (blH.x + brH.x) / 2, y: (blH.y + brH.y) / 2 };
-    const midW = { x: (tlH.x + blH.x) / 2, y: (tlH.y + blH.y) / 2 };
-    const midE = { x: (trH.x + brH.x) / 2, y: (trH.y + brH.y) / 2 };
-    ctx.moveTo(midW.x, midW.y);
-    ctx.lineTo(midE.x, midE.y);
-    ctx.moveTo(midN.x, midN.y);
-    ctx.lineTo(midS.x, midS.y);
+    ctx.moveTo(sx, topY + CELL * 0.33);
+    ctx.lineTo(sx + CELL, topY + CELL * 0.33);
+    ctx.moveTo(sx, topY + CELL * 0.66);
+    ctx.lineTo(sx + CELL, topY + CELL * 0.66);
+    const brickOff = ((x + Math.floor(y / 2)) % 2) * (CELL / 2);
+    ctx.moveTo(sx + brickOff, topY);
+    ctx.lineTo(sx + brickOff, topY + CELL * 0.33);
+    ctx.moveTo(sx + CELL / 2 - brickOff + CELL / 2, topY + CELL * 0.33);
+    ctx.lineTo(sx + CELL / 2 - brickOff + CELL / 2, topY + CELL * 0.66);
+    ctx.moveTo(sx + brickOff, topY + CELL * 0.66);
+    ctx.lineTo(sx + brickOff, topY + CELL);
     ctx.stroke();
 
+    // Wear / lichen flecks
     if ((x * 3 + y * 7) % 9 === 0) {
       ctx.fillStyle = "rgba(110, 130, 90, 0.18)";
-      ctx.fillRect(tlH.x + 6, tlH.y + 6, 10, 6);
+      ctx.fillRect(sx + 5 * PX, topY + 6 * PX, 8 * PX, 5 * PX);
+    }
+    if ((x * 5 + y) % 13 === 0) {
+      ctx.fillStyle = "rgba(30, 26, 22, 0.28)";
+      ctx.fillRect(sx + 12 * PX, topY + 14 * PX, 6 * PX, 4 * PX);
+    }
+
+    // Light vertical south face when open space below (reads as thickness, still overhead)
+    const below = y + 1 >= maze.rows ? TILE.FLOOR : maze.grid[y + 1][x];
+    if (below !== TILE.WALL) {
+      ctx.fillStyle = "#2a2620";
+      ctx.fillRect(sx, sy + CELL - wh, CELL, wh);
+      ctx.fillStyle = "#3a342c";
+      ctx.fillRect(sx + 1 * PX, sy + CELL - wh, CELL - 2 * PX, wh);
+      ctx.strokeStyle = "rgba(12, 10, 8, 0.55)";
+      ctx.beginPath();
+      ctx.moveTo(sx, sy + CELL - wh * 0.55);
+      ctx.lineTo(sx + CELL, sy + CELL - wh * 0.55);
+      ctx.moveTo(sx + CELL * 0.35, sy + CELL - wh);
+      ctx.lineTo(sx + CELL * 0.35, sy + CELL);
+      ctx.moveTo(sx + CELL * 0.7, sy + CELL - wh);
+      ctx.lineTo(sx + CELL * 0.7, sy + CELL);
+      ctx.stroke();
     }
   }
 
   function drawTorchBillboard(t) {
     const base = worldToScreen(t.x + 0.5, t.y + 0.55);
     const sx = base.x;
-    const sy = base.y - ISO.wallH * 0.55;
+    const sy = base.y - CELL * 0.15;
     if (sx < -80 || sy < -80 || sx > canvas.width + 80 || sy > canvas.height + 80) return;
     const flicker = torchFlicker * (0.92 + Math.sin(animTime * 9 + t.x * 1.7) * 0.08);
     ctx.fillStyle = "#2a2218";
@@ -2303,8 +2166,8 @@
   }
 
   function drawDecorBillboard(d) {
-    const fw = (d.w || 1) * ISO.kx * 0.85;
-    const fh = (d.h || 1) * ISO.wallH * 0.9;
+    const fw = (d.w || 1) * CELL * 0.85;
+    const fh = (d.h || 1) * CELL * 0.85;
     const foot = worldToScreen(d.x + (d.w || 1) * 0.5, d.y + (d.h || 1) * 0.9);
     const sx = foot.x - fw / 2;
     const sy = foot.y - fh;
@@ -2414,8 +2277,8 @@
       ctx.fillStyle = pg;
       ctx.fillRect(sx + 9 * PX, sy + 9 * PX, pw - 18 * PX, ph - 18 * PX);
     } else if (d.type === "entranceGate" || d.type === "exitGate") {
-      const gw = Math.max(fw, ISO.kx * 2.2);
-      const gh = Math.max(fh, ISO.wallH * 1.15);
+      const gw = Math.max(fw, CELL * 2.2);
+      const gh = Math.max(fh, CELL * 1.05);
       const gx = foot.x - gw / 2;
       const gy = foot.y - gh;
       const isExit = d.type === "exitGate";
@@ -2500,7 +2363,7 @@
       }
     }
 
-    // Walls back→front (near/south omitted inside drawWallTile)
+    // Walls (top-down with light faux thickness)
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
         if (!tileVisibleInRegion(x, y, camRegion)) continue;
@@ -2598,8 +2461,8 @@
         if (!tileVisibleInRegion(t.x, t.y, camRegion)) continue;
         const tp = worldToScreen(t.x + 0.5, t.y + 0.35);
         const tx = tp.x;
-        const ty = tp.y - ISO.wallH * 0.35;
-        const rad = TORCH_RADIUS * ISO.kx * (0.9 + (torchFlicker - 0.85) * 0.6);
+        const ty = tp.y - CELL * 0.1;
+        const rad = TORCH_RADIUS * CELL * (0.9 + (torchFlicker - 0.85) * 0.6);
         const g = lightCtx.createRadialGradient(tx, ty, 0, tx, ty, rad);
         g.addColorStop(0, "rgba(0,0,0,0.88)");
         g.addColorStop(0.45, "rgba(0,0,0,0.5)");
@@ -2612,7 +2475,7 @@
     }
 
     {
-      const rad = 1.6 * ISO.kx;
+      const rad = 1.6 * CELL;
       const g = lightCtx.createRadialGradient(px, py, 0, px, py, rad);
       g.addColorStop(0, "rgba(0,0,0,0.4)");
       g.addColorStop(1, "rgba(0,0,0,0)");
@@ -2639,7 +2502,7 @@
         player.x + Math.cos(ang) * range * 0.45,
         player.y + Math.sin(ang) * range * 0.45
       );
-      const fg = lightCtx.createRadialGradient(px, py, ISO.kx * 0.3, tip.x, tip.y, range * ISO.kx);
+      const fg = lightCtx.createRadialGradient(px, py, CELL * 0.3, tip.x, tip.y, range * CELL);
       fg.addColorStop(0, "rgba(0,0,0,0.97)");
       fg.addColorStop(0.55, "rgba(0,0,0,0.75)");
       fg.addColorStop(1, "rgba(0,0,0,0)");
@@ -2657,8 +2520,8 @@
         if (!tileVisibleInRegion(t.x, t.y, camRegion)) continue;
         const tp = worldToScreen(t.x + 0.5, t.y + 0.35);
         const tx = tp.x;
-        const ty = tp.y - ISO.wallH * 0.35;
-        const rad = TORCH_RADIUS * ISO.kx * 0.85 * torchFlicker;
+        const ty = tp.y - CELL * 0.1;
+        const rad = TORCH_RADIUS * CELL * 0.85 * torchFlicker;
         const g = ctx.createRadialGradient(tx, ty, 0, tx, ty, rad);
         g.addColorStop(0, "rgba(255,140,40,0.22)");
         g.addColorStop(0.5, "rgba(255,100,30,0.08)");
@@ -2685,7 +2548,7 @@
         player.x + Math.cos(ang) * range * 0.45,
         player.y + Math.sin(ang) * range * 0.45
       );
-      const fg = ctx.createRadialGradient(px, py, 0, tip.x, tip.y - 4 * SP, range * ISO.kx * 0.7);
+      const fg = ctx.createRadialGradient(px, py, 0, tip.x, tip.y - 4 * SP, range * CELL * 0.7);
       fg.addColorStop(0, "rgba(200,220,255,0.16)");
       fg.addColorStop(0.6, "rgba(180,200,255,0.06)");
       fg.addColorStop(1, "rgba(0,0,0,0)");
