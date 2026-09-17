@@ -8,7 +8,7 @@
   const CELL = 80; // 2× tiles (~20×14 tiles on 1600×1120)
   const PX = CELL / 40; // scale factor for map décor / wall detail
   // Entity sprites ~5× larger than the old PX-authored radii (keep CELL so rooms stay screen-filling)
-  const SP = PX * 5;
+  const SP = PX * (5 / 3); // was 5×; user: 3× smaller
   // Large mansion — camera frames a window into the current room
   const COLS = 96;
   const ROWS = 72;
