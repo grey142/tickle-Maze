@@ -1079,7 +1079,9 @@ window.MazeGen = (function () {
     }
 
     const enemySpawns = [];
-    const minionCount = 2 + Math.min(params.level, 10);
+    // +1 slot is reserved for the succubus in game.js (index 0)
+    // Modest bump so multiple flying minion types appear on L1
+    const minionCount = 4 + Math.min(params.level, 10);
     for (let i = 0; i < minionCount + 1; i++) {
       const nonStart = rooms.filter(function (_, ri) {
         return ri !== startIdx;

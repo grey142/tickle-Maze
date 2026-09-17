@@ -64,6 +64,9 @@ Rules:
 - Floors: **sand + irregular cobblestone**
 - Walls: **faux-3D weathered stone brick** (top face + vertical thickness)
 - Warm torch glow; underground abandoned-tunnel vibe
+- Characters & pickups drawn ~**3×** larger (entity sprite scale); rooms stay screen-filling (CELL=80)
+- Flying tickly minions have multiple silhouettes/colors/wing styles; flashlight still scares them
+- Succubus always present — larger unique sprite with horns, wings, and glow; ignores flashlight
 - Entrance/exit: stone arches with **portcullis** grate + flanking torches
 
 ## Files

@@ -6,7 +6,9 @@
 
   const TILE = window.MazeGen.TILE;
   const CELL = 80; // 2× tiles (~20×14 tiles on 1600×1120)
-  const PX = CELL / 40; // scale factor for pixel-authored sprite radii
+  const PX = CELL / 40; // scale factor for map décor / wall detail
+  // Entity sprites ~3× larger than the old PX-authored radii (keep CELL so rooms stay screen-filling)
+  const SP = PX * 3;
   // Large mansion — camera frames a window into the current room
   const COLS = 96;
   const ROWS = 72;
@@ -39,6 +41,16 @@
   // Succubus sight
   const SUCC_LOS_RANGE = 11;
   const SUCC_HEAR_RANGE = 14;
+
+  // Flying tickly minion visual varieties (behavior identical)
+  const MINION_TYPES = [
+    { id: "bat", body: "#a78bfa", wing: "#7c3aed", eye: "#fde047", accent: "#c4b5fd", wingStyle: "bat" },
+    { id: "moth", body: "#f9a8d4", wing: "#fbcfe8", eye: "#fff7ed", accent: "#fce7f3", wingStyle: "moth" },
+    { id: "imp", body: "#fb923c", wing: "#ea580c", eye: "#fef08a", accent: "#fdba74", wingStyle: "pointy" },
+    { id: "wisp", body: "#67e8f9", wing: "#22d3ee", eye: "#ecfeff", accent: "#a5f3fc", wingStyle: "wispy" },
+    { id: "beetle", body: "#86efac", wing: "#4ade80", eye: "#fef9c3", accent: "#bbf7d0", wingStyle: "bug" },
+    { id: "raven", body: "#c084fc", wing: "#6b21a8", eye: "#fde68a", accent: "#e9d5ff", wingStyle: "raven" }
+  ];
 
   // --- DOM ---
   const $ = (id) => document.getElementById(id);
@@ -307,12 +319,24 @@
     };
     enemies = [];
     succubusRef = null;
-    maze.enemySpawns.forEach((s, i) => {
+    const spawns = (maze.enemySpawns && maze.enemySpawns.slice()) || [];
+    // Guarantee at least one spawn slot for the succubus
+    if (!spawns.length) {
+      const far =
+        (window.MazeGen.randomFloorFar &&
+          window.MazeGen.randomFloorFar(maze, maze.start.x, maze.start.y, 10)) ||
+        null;
+      spawns.push(far || { x: maze.start.x + 3, y: maze.start.y });
+    }
+    spawns.forEach((s, i) => {
       const isSucc = i === 0;
+      const mt = MINION_TYPES[(i - 1) % MINION_TYPES.length];
       const e = {
         x: s.x + 0.5,
         y: s.y + 0.5,
         kind: isSucc ? "succubus" : "minion",
+        minionType: isSucc ? null : mt.id,
+        sprite: isSucc ? null : mt,
         speed: isSucc ? SUCC_WANDER : MINION_SPEED,
         wanderSpeed: isSucc ? SUCC_WANDER : MINION_SPEED,
         chaseSpeed: isSucc ? SUCC_CHASE : MINION_SPEED * 1.15,
@@ -331,6 +355,36 @@
       enemies.push(e);
       if (isSucc) succubusRef = e;
     });
+    // Hard guarantee: if somehow missing, inject succubus far from player
+    if (!succubusRef) {
+      const far =
+        (window.MazeGen.randomFloorFar &&
+          window.MazeGen.randomFloorFar(maze, player.x, player.y, 12)) ||
+        { x: maze.exit.x, y: maze.exit.y };
+      const e = {
+        x: far.x + 0.5,
+        y: far.y + 0.5,
+        kind: "succubus",
+        minionType: null,
+        sprite: null,
+        speed: SUCC_WANDER,
+        wanderSpeed: SUCC_WANDER,
+        chaseSpeed: SUCC_CHASE,
+        awareness: SUCC_LOS_RANGE,
+        pathTimer: 0,
+        path: [],
+        anim: Math.random() * Math.PI * 2,
+        scared: false,
+        fleeUntil: 0,
+        fleeing: false,
+        despawnAt: 0,
+        hasSight: false,
+        chasing: false,
+        wanderTarget: null
+      };
+      enemies.unshift(e);
+      succubusRef = e;
+    }
     particles = [];
     floatTexts = [];
     invulnUntil = 0;
@@ -1275,6 +1329,216 @@
   }
 
   // --- Rendering ---
+  function drawSuccubusSprite(ex, ey, e) {
+    const flap = Math.sin(e.anim * 1.6) * 0.35;
+    const glow = 0.45 + Math.sin(e.anim) * 0.2;
+    // Magenta aura — always readable
+    const aura = ctx.createRadialGradient(ex, ey, 4 * SP, ex, ey, 28 * SP);
+    aura.addColorStop(0, `rgba(255, 80, 180, ${0.55 * glow})`);
+    aura.addColorStop(0.55, `rgba(200, 40, 140, ${0.22 * glow})`);
+    aura.addColorStop(1, "rgba(120, 20, 80, 0)");
+    ctx.fillStyle = aura;
+    ctx.beginPath();
+    ctx.arc(ex, ey, 28 * SP, 0, Math.PI * 2);
+    ctx.fill();
+    // Bat wings
+    ctx.fillStyle = e.hasSight ? "rgba(160, 40, 120, 0.85)" : "rgba(120, 30, 100, 0.75)";
+    ctx.beginPath();
+    ctx.moveTo(ex - 6 * SP, ey);
+    ctx.quadraticCurveTo(ex - 22 * SP, ey - 14 * SP - flap * 10 * SP, ex - 30 * SP, ey + 2 * SP);
+    ctx.quadraticCurveTo(ex - 20 * SP, ey + 6 * SP, ex - 8 * SP, ey + 4 * SP);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(ex + 6 * SP, ey);
+    ctx.quadraticCurveTo(ex + 22 * SP, ey - 14 * SP - flap * 10 * SP, ex + 30 * SP, ey + 2 * SP);
+    ctx.quadraticCurveTo(ex + 20 * SP, ey + 6 * SP, ex + 8 * SP, ey + 4 * SP);
+    ctx.closePath();
+    ctx.fill();
+    // Wing membrane ribs
+    ctx.strokeStyle = "rgba(255, 140, 200, 0.45)";
+    ctx.lineWidth = 1.2 * SP;
+    ctx.beginPath();
+    ctx.moveTo(ex - 8 * SP, ey);
+    ctx.lineTo(ex - 24 * SP, ey - 6 * SP - flap * 6 * SP);
+    ctx.moveTo(ex + 8 * SP, ey);
+    ctx.lineTo(ex + 24 * SP, ey - 6 * SP - flap * 6 * SP);
+    ctx.stroke();
+    // Body
+    ctx.fillStyle = e.hasSight ? "#e050b0" : "#c040a0";
+    ctx.beginPath();
+    ctx.ellipse(ex, ey + 1 * SP, 12 * SP, 15 * SP, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Head
+    ctx.fillStyle = "#d060b0";
+    ctx.beginPath();
+    ctx.arc(ex, ey - 12 * SP, 9 * SP, 0, Math.PI * 2);
+    ctx.fill();
+    // Horns
+    ctx.strokeStyle = "#ff6bcb";
+    ctx.lineWidth = 2.5 * SP;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(ex - 5 * SP, ey - 16 * SP);
+    ctx.quadraticCurveTo(ex - 10 * SP, ey - 28 * SP, ex - 3 * SP, ey - 24 * SP);
+    ctx.moveTo(ex + 5 * SP, ey - 16 * SP);
+    ctx.quadraticCurveTo(ex + 10 * SP, ey - 28 * SP, ex + 3 * SP, ey - 24 * SP);
+    ctx.stroke();
+    // Eyes
+    ctx.fillStyle = e.hasSight ? "#fff7ae" : "#ffe4f0";
+    ctx.beginPath();
+    ctx.arc(ex - 3.5 * SP, ey - 12 * SP, 2.2 * SP, 0, Math.PI * 2);
+    ctx.arc(ex + 3.5 * SP, ey - 12 * SP, 2.2 * SP, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#2a0618";
+    ctx.beginPath();
+    ctx.arc(ex - 3.5 * SP, ey - 12 * SP, 1 * SP, 0, Math.PI * 2);
+    ctx.arc(ex + 3.5 * SP, ey - 12 * SP, 1 * SP, 0, Math.PI * 2);
+    ctx.fill();
+    // Pulse ring when chasing
+    ctx.strokeStyle = `rgba(255, 100, 200, ${0.35 + glow * 0.4})`;
+    ctx.lineWidth = 2 * SP;
+    ctx.beginPath();
+    ctx.arc(ex, ey, (18 + Math.sin(e.anim) * 3) * SP, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  function drawMinionSprite(ex, ey, e) {
+    const t = e.sprite || MINION_TYPES[0];
+    const flap = Math.sin(e.anim * 2.4 + (e.x || 0)) * 0.5;
+    const bob = Math.sin(e.anim * 1.8) * 1.5 * SP;
+    const cy = ey + bob;
+    // Soft glow
+    ctx.fillStyle = t.accent + "55";
+    ctx.beginPath();
+    ctx.arc(ex, cy, 14 * SP, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Wings by style
+    ctx.fillStyle = t.wing;
+    const style = t.wingStyle;
+    if (style === "bat" || style === "raven") {
+      const span = style === "raven" ? 18 : 15;
+      ctx.beginPath();
+      ctx.moveTo(ex - 4 * SP, cy);
+      ctx.quadraticCurveTo(ex - span * SP, cy - 10 * SP - flap * 8 * SP, ex - (span + 4) * SP, cy + 2 * SP);
+      ctx.quadraticCurveTo(ex - 12 * SP, cy + 5 * SP, ex - 4 * SP, cy + 3 * SP);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(ex + 4 * SP, cy);
+      ctx.quadraticCurveTo(ex + span * SP, cy - 10 * SP - flap * 8 * SP, ex + (span + 4) * SP, cy + 2 * SP);
+      ctx.quadraticCurveTo(ex + 12 * SP, cy + 5 * SP, ex + 4 * SP, cy + 3 * SP);
+      ctx.closePath();
+      ctx.fill();
+    } else if (style === "moth") {
+      ctx.beginPath();
+      ctx.ellipse(ex - 10 * SP, cy - flap * 3 * SP, 9 * SP, 7 * SP, -0.4, 0, Math.PI * 2);
+      ctx.ellipse(ex + 10 * SP, cy - flap * 3 * SP, 9 * SP, 7 * SP, 0.4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = t.accent + "aa";
+      ctx.beginPath();
+      ctx.ellipse(ex - 10 * SP, cy - flap * 3 * SP, 4 * SP, 3 * SP, -0.4, 0, Math.PI * 2);
+      ctx.ellipse(ex + 10 * SP, cy - flap * 3 * SP, 4 * SP, 3 * SP, 0.4, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (style === "pointy") {
+      ctx.beginPath();
+      ctx.moveTo(ex - 3 * SP, cy);
+      ctx.lineTo(ex - 16 * SP, cy - 12 * SP - flap * 6 * SP);
+      ctx.lineTo(ex - 6 * SP, cy + 4 * SP);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(ex + 3 * SP, cy);
+      ctx.lineTo(ex + 16 * SP, cy - 12 * SP - flap * 6 * SP);
+      ctx.lineTo(ex + 6 * SP, cy + 4 * SP);
+      ctx.closePath();
+      ctx.fill();
+      // Little horns
+      ctx.strokeStyle = t.wing;
+      ctx.lineWidth = 1.8 * SP;
+      ctx.beginPath();
+      ctx.moveTo(ex - 3 * SP, cy - 7 * SP);
+      ctx.lineTo(ex - 5 * SP, cy - 13 * SP);
+      ctx.moveTo(ex + 3 * SP, cy - 7 * SP);
+      ctx.lineTo(ex + 5 * SP, cy - 13 * SP);
+      ctx.stroke();
+    } else if (style === "wispy") {
+      ctx.globalAlpha = 0.75;
+      ctx.beginPath();
+      ctx.ellipse(ex - 9 * SP, cy - flap * 4 * SP, 7 * SP, 11 * SP, -0.3, 0, Math.PI * 2);
+      ctx.ellipse(ex + 9 * SP, cy - flap * 4 * SP, 7 * SP, 11 * SP, 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    } else {
+      // bug / beetle — short buzzing wings
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath();
+      ctx.ellipse(ex - 8 * SP, cy - 2 * SP - flap * 2 * SP, 6 * SP, 3.5 * SP, -0.2, 0, Math.PI * 2);
+      ctx.ellipse(ex + 8 * SP, cy - 2 * SP - flap * 2 * SP, 6 * SP, 3.5 * SP, 0.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    // Body
+    ctx.fillStyle = t.body;
+    ctx.beginPath();
+    if (style === "beetle" || style === "bug") {
+      ctx.ellipse(ex, cy, 8 * SP, 10 * SP, 0, 0, Math.PI * 2);
+    } else if (style === "wispy") {
+      ctx.ellipse(ex, cy, 7 * SP, 9 * SP, 0, 0, Math.PI * 2);
+    } else {
+      ctx.arc(ex, cy, 8 * SP, 0, Math.PI * 2);
+    }
+    ctx.fill();
+    // Eyes
+    ctx.fillStyle = t.eye;
+    ctx.beginPath();
+    ctx.arc(ex - 2.5 * SP, cy - 1.5 * SP, 2 * SP, 0, Math.PI * 2);
+    ctx.arc(ex + 2.5 * SP, cy - 1.5 * SP, 2 * SP, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#1a1020";
+    ctx.beginPath();
+    ctx.arc(ex - 2.5 * SP, cy - 1.5 * SP, 0.9 * SP, 0, Math.PI * 2);
+    ctx.arc(ex + 2.5 * SP, cy - 1.5 * SP, 0.9 * SP, 0, Math.PI * 2);
+    ctx.fill();
+    // Antennae for moth/beetle
+    if (style === "moth" || style === "bug" || style === "beetle") {
+      ctx.strokeStyle = t.accent;
+      ctx.lineWidth = 1.2 * SP;
+      ctx.beginPath();
+      ctx.moveTo(ex - 2 * SP, cy - 7 * SP);
+      ctx.quadraticCurveTo(ex - 6 * SP, cy - 14 * SP, ex - 4 * SP, cy - 15 * SP);
+      ctx.moveTo(ex + 2 * SP, cy - 7 * SP);
+      ctx.quadraticCurveTo(ex + 6 * SP, cy - 14 * SP, ex + 4 * SP, cy - 15 * SP);
+      ctx.stroke();
+    }
+  }
+
+  function drawPlayerSprite(px, py) {
+    // Soft personal glow
+    ctx.fillStyle = "rgba(126, 200, 255, 0.25)";
+    ctx.beginPath();
+    ctx.arc(px, py, 16 * SP, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = player.sprinting ? "#a8e0ff" : "#7ec8ff";
+    ctx.beginPath();
+    ctx.arc(px, py, 9 * SP, 0, Math.PI * 2);
+    ctx.fill();
+    // Head hint
+    ctx.fillStyle = "#9ad4ff";
+    ctx.beginPath();
+    ctx.arc(px, py - 10 * SP, 5.5 * SP, 0, Math.PI * 2);
+    ctx.fill();
+    // Clothing indicators (larger chips)
+    ctx.fillStyle = player.clothing.shirt ? "#5eead4" : "#333";
+    ctx.fillRect(px - 10 * SP, py - 4 * SP, 7 * SP, 4 * SP);
+    ctx.fillStyle = player.clothing.pants ? "#5eead4" : "#333";
+    ctx.fillRect(px - 3 * SP, py + 8 * SP, 7 * SP, 4 * SP);
+    ctx.fillStyle = player.clothing.shoes ? "#5eead4" : "#333";
+    ctx.fillRect(px + 5 * SP, py + 8 * SP, 7 * SP, 4 * SP);
+  }
+
   function draw() {
     if (!maze) return;
     const w = canvas.width,
@@ -1478,23 +1742,23 @@
               ctx.fillText("LOCKED", sx + CELL / 2, sy + CELL - 5 * PX);
             }
           } else if (t === TILE.KEY) {
-            const bounce = Math.sin(animTime * 5 + x + y) * 2 * PX;
+            const bounce = Math.sin(animTime * 5 + x + y) * 2 * SP;
             ctx.fillStyle = `rgba(251,191,36,${0.35 + 0.2 * torchFlicker})`;
             ctx.beginPath();
-            ctx.arc(sx + CELL / 2, sy + CELL / 2 + bounce, 10 * PX, 0, Math.PI * 2);
+            ctx.arc(sx + CELL / 2, sy + CELL / 2 + bounce, 10 * SP, 0, Math.PI * 2);
             ctx.fill();
             ctx.fillStyle = "#fbbf24";
             ctx.beginPath();
-            ctx.arc(sx + CELL / 2 - 2 * PX, sy + CELL / 2 - 3 * PX + bounce, 5 * PX, 0, Math.PI * 2);
+            ctx.arc(sx + CELL / 2 - 2 * SP, sy + CELL / 2 - 3 * SP + bounce, 5 * SP, 0, Math.PI * 2);
             ctx.fill();
             ctx.fillStyle = "#14101c";
             ctx.beginPath();
-            ctx.arc(sx + CELL / 2 - 2 * PX, sy + CELL / 2 - 3 * PX + bounce, 2 * PX, 0, Math.PI * 2);
+            ctx.arc(sx + CELL / 2 - 2 * SP, sy + CELL / 2 - 3 * SP + bounce, 2 * SP, 0, Math.PI * 2);
             ctx.fill();
             ctx.fillStyle = "#fbbf24";
-            ctx.fillRect(sx + CELL / 2 + 2 * PX, sy + CELL / 2 - 1 * PX + bounce, 7 * PX, 3 * PX);
-            ctx.fillRect(sx + CELL / 2 + 6 * PX, sy + CELL / 2 + 2 * PX + bounce, 3 * PX, 4 * PX);
-            ctx.fillRect(sx + CELL / 2 + 4 * PX, sy + CELL / 2 + 4 * PX + bounce, 3 * PX, 2 * PX);
+            ctx.fillRect(sx + CELL / 2 + 2 * SP, sy + CELL / 2 - 1 * SP + bounce, 7 * SP, 3 * SP);
+            ctx.fillRect(sx + CELL / 2 + 6 * SP, sy + CELL / 2 + 2 * SP + bounce, 3 * SP, 4 * SP);
+            ctx.fillRect(sx + CELL / 2 + 4 * SP, sy + CELL / 2 + 4 * SP + bounce, 3 * SP, 2 * SP);
           } else if (t === TILE.TRAP) {
             // Hard to see — low-contrast floor seam
             ctx.strokeStyle = "rgba(80,50,70,0.45)";
@@ -1509,23 +1773,23 @@
           } else if (t === TILE.POTION) {
             ctx.fillStyle = "#5eead4";
             ctx.beginPath();
-            ctx.arc(sx + CELL / 2, sy + CELL / 2 - 2 * PX, 6 * PX, 0, Math.PI * 2);
+            ctx.arc(sx + CELL / 2, sy + CELL / 2 - 2 * SP, 6 * SP, 0, Math.PI * 2);
             ctx.fill();
             ctx.fillStyle = "#a5f3fc";
-            ctx.fillRect(sx + CELL / 2 - 3 * PX, sy + CELL / 2 + 4 * PX, 6 * PX, 5 * PX);
+            ctx.fillRect(sx + CELL / 2 - 3 * SP, sy + CELL / 2 + 4 * SP, 6 * SP, 5 * SP);
           } else if (
             t === TILE.CLOTH_SHIRT ||
             t === TILE.CLOTH_SHOES ||
             t === TILE.CLOTH_PANTS
           ) {
             ctx.fillStyle = "#e040a0";
-            ctx.fillRect(sx + 6 * PX, sy + 8 * PX, CELL - 12 * PX, CELL - 14 * PX);
+            ctx.fillRect(sx + 6 * SP, sy + 8 * SP, CELL - 12 * SP, CELL - 14 * SP);
             ctx.fillStyle = "#ffb3e0";
-            ctx.font = Math.round(10 * PX) + "px sans-serif";
+            ctx.font = Math.round(10 * SP) + "px sans-serif";
             ctx.textAlign = "center";
             const label =
               t === TILE.CLOTH_SHIRT ? "👕" : t === TILE.CLOTH_SHOES ? "👟" : "👖";
-            ctx.fillText(label, sx + CELL / 2, sy + CELL / 2 + 4 * PX);
+            ctx.fillText(label, sx + CELL / 2, sy + CELL / 2 + 4 * SP);
           }
         }
       }
@@ -1810,48 +2074,16 @@
       const ex = (e.x - camera.x) * CELL;
       const ey = (e.y - camera.y) * CELL;
       if (e.kind === "succubus") {
-        ctx.fillStyle = e.hasSight ? "#e050b0" : "#c040a0";
-        ctx.beginPath();
-        ctx.arc(ex, ey, 11 * PX, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = "#ff6bcb";
-        ctx.lineWidth = 2 * PX;
-        ctx.beginPath();
-        ctx.moveTo(ex - 5 * PX, ey - 9 * PX);
-        ctx.lineTo(ex - 8 * PX, ey - 16 * PX);
-        ctx.moveTo(ex + 5 * PX, ey - 9 * PX);
-        ctx.lineTo(ex + 8 * PX, ey - 16 * PX);
-        ctx.stroke();
-        ctx.strokeStyle = `rgba(224,64,160,${0.4 + Math.sin(e.anim) * 0.2})`;
-        ctx.beginPath();
-        ctx.arc(ex, ey, (14 + Math.sin(e.anim) * 2) * PX, 0, Math.PI * 2);
-        ctx.stroke();
+        drawSuccubusSprite(ex, ey, e);
       } else {
-        ctx.fillStyle = "#a78bfa";
-        ctx.beginPath();
-        ctx.arc(ex, ey, 8 * PX, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = "#fde047";
-        ctx.beginPath();
-        ctx.arc(ex - 2 * PX, ey - 1 * PX, 1.5 * PX, 0, Math.PI * 2);
-        ctx.arc(ex + 2 * PX, ey - 1 * PX, 1.5 * PX, 0, Math.PI * 2);
-        ctx.fill();
+        drawMinionSprite(ex, ey, e);
       }
       ctx.globalAlpha = 1;
     }
 
     const inv = performance.now() < invulnUntil;
     if (!inv || Math.floor(animTime * 12) % 2 === 0) {
-      ctx.fillStyle = player.sprinting ? "#a8e0ff" : "#7ec8ff";
-      ctx.beginPath();
-      ctx.arc(px, py, 9 * PX, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = player.clothing.shirt ? "#5eead4" : "#333";
-      ctx.fillRect(px - 8 * PX, py - 14 * PX, 5 * PX, 3 * PX);
-      ctx.fillStyle = player.clothing.pants ? "#5eead4" : "#333";
-      ctx.fillRect(px - 2 * PX, py + 10 * PX, 5 * PX, 3 * PX);
-      ctx.fillStyle = player.clothing.shoes ? "#5eead4" : "#333";
-      ctx.fillRect(px + 4 * PX, py + 10 * PX, 5 * PX, 3 * PX);
+      drawPlayerSprite(px, py);
     }
 
     for (let i = particles.length - 1; i >= 0; i--) {
@@ -1866,7 +2098,7 @@
       ctx.globalAlpha = Math.max(0, p.life);
       ctx.fillStyle = p.color;
       ctx.beginPath();
-      ctx.arc(p.x - camera.x * CELL, p.y - camera.y * CELL, 3 * PX, 0, Math.PI * 2);
+      ctx.arc(p.x - camera.x * CELL, p.y - camera.y * CELL, 3 * SP, 0, Math.PI * 2);
       ctx.fill();
       ctx.globalAlpha = 1;
     }
@@ -1974,17 +2206,19 @@
 
     {
       if (!inv || Math.floor(animTime * 12) % 2 === 0) {
-        const tip = 14;
+        const tip = 14 * SP;
+        const half = 5 * SP;
+        const back = 2 * SP;
         ctx.fillStyle = "rgba(220,235,255,0.85)";
         ctx.beginPath();
         ctx.moveTo(px + player.facingDx * tip, py + player.facingDy * tip);
         ctx.lineTo(
-          px - player.facingDy * 5 - player.facingDx * 2,
-          py + player.facingDx * 5 - player.facingDy * 2
+          px - player.facingDy * half - player.facingDx * back,
+          py + player.facingDx * half - player.facingDy * back
         );
         ctx.lineTo(
-          px + player.facingDy * 5 - player.facingDx * 2,
-          py - player.facingDx * 5 - player.facingDy * 2
+          px + player.facingDy * half - player.facingDx * back,
+          py - player.facingDx * half - player.facingDy * back
         );
         ctx.closePath();
         ctx.fill();
@@ -1998,7 +2232,7 @@
     ctx.fillRect(0, 0, w, h);
 
     ctx.textAlign = "center";
-    ctx.font = "bold " + Math.round(12 * PX) + "px Segoe UI, sans-serif";
+    ctx.font = "bold " + Math.round(12 * SP) + "px Segoe UI, sans-serif";
     for (const ft of floatTexts) {
       const fx = (ft.x - camera.x) * CELL;
       const fy = (ft.y - camera.y) * CELL;
