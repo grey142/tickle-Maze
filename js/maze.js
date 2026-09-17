@@ -1,12 +1,13 @@
 /**
- * Underground tunnel mansion generator — large square maps of open
- * rectangular rooms connected ONLY by doorways cut in shared walls.
- * No hallways. Seeded RNG so restart keeps the same layout.
+ * Underground tunnel mansion generator — large square maps of many
+ * small rectangular/square rooms connected ONLY by doorways cut in
+ * shared walls. No hallways. Seeded RNG so restart keeps the same layout.
  *
  * Sizing (level 1..10):
- *   map edge  ~165 → ~290 tiles (square)
- *   rooms     base × 1.05^(level-1)
- *   dead-ends 10% + 2% per level above 1
+ *   map edge   ~165 → ~290 tiles (square)
+ *   room size  cozy chambers ~5–9 tiles on a side
+ *   rooms      base × 1.05^(level-1) (dense pack; oversized leaves keep splitting)
+ *   dead-ends  10% + 2% per level above 1
  */
 window.MazeGen = (function () {
   function mulberry32(a) {
@@ -31,7 +32,7 @@ window.MazeGen = (function () {
   };
 
   const KEYS_REQUIRED = 3;
-  const BASE_ROOMS = 18;
+  const BASE_ROOMS = 220;
 
   function levelParams(level) {
     const lv = Math.max(1, level | 0);
@@ -69,19 +70,25 @@ window.MazeGen = (function () {
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
   }
 
-  /** BSP: leaves separated by 1-tile shared walls. */
+  /** BSP: small leaves (cozy rooms) separated by 1-tile shared walls. */
   function bspPartition(root, targetLeaves, rng) {
-    const minLeafW = 14;
-    const minLeafH = 12;
+    const minLeafW = 5;
+    const minLeafH = 5;
+    const maxRoom = 9;
     const leaves = [];
+
+    function oversized(node) {
+      return node.w > maxRoom || node.h > maxRoom;
+    }
 
     function split(node, depth) {
       const canW = node.w >= minLeafW * 2 + 1;
       const canH = node.h >= minLeafH * 2 + 1;
+      const mustSplit = oversized(node) && (canW || canH);
       const stop =
         (!canW && !canH) ||
-        (leaves.length + 1 >= targetLeaves && depth > 1) ||
-        (depth > 2 && leaves.length >= targetLeaves * 0.85 && rng() < 0.2);
+        (!mustSplit && leaves.length + 1 >= targetLeaves && depth > 1) ||
+        (!mustSplit && depth > 2 && leaves.length >= targetLeaves * 0.85 && rng() < 0.18);
 
       if (stop) {
         leaves.push(node);
@@ -94,7 +101,8 @@ window.MazeGen = (function () {
 
       let horizontal;
       if (canW && canH) {
-        horizontal = node.w > node.h * 1.15 ? false : node.h > node.w * 1.15 ? true : rng() < 0.5;
+        // Bias toward square-ish chambers; still allow slight rectangles.
+        horizontal = node.w > node.h * 1.12 ? false : node.h > node.w * 1.12 ? true : rng() < 0.5;
       } else {
         horizontal = !!canH && !canW;
       }
@@ -106,7 +114,15 @@ window.MazeGen = (function () {
           leaves.push(node);
           return;
         }
-        const splitX = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
+        let splitX;
+        if (node.w <= maxRoom * 2 + 1 && rng() < 0.55) {
+          // Prefer child widths in the cozy 5–9 band when possible.
+          const lo = Math.max(minSplit, node.x + 5);
+          const hi = Math.min(maxSplit, node.x + node.w - 5 - 1);
+          splitX = lo <= hi ? lo + Math.floor(rng() * (hi - lo + 1)) : minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
+        } else {
+          splitX = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
+        }
         split({ x: node.x, y: node.y, w: splitX - node.x, h: node.h }, depth + 1);
         split(
           { x: splitX + 1, y: node.y, w: node.x + node.w - splitX - 1, h: node.h },
@@ -119,7 +135,14 @@ window.MazeGen = (function () {
           leaves.push(node);
           return;
         }
-        const splitY = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
+        let splitY;
+        if (node.h <= maxRoom * 2 + 1 && rng() < 0.55) {
+          const lo = Math.max(minSplit, node.y + 5);
+          const hi = Math.min(maxSplit, node.y + node.h - 5 - 1);
+          splitY = lo <= hi ? lo + Math.floor(rng() * (hi - lo + 1)) : minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
+        } else {
+          splitY = minSplit + Math.floor(rng() * (maxSplit - minSplit + 1));
+        }
         split({ x: node.x, y: node.y, w: node.w, h: splitY - node.y }, depth + 1);
         split(
           { x: node.x, y: splitY + 1, w: node.w, h: node.y + node.h - splitY - 1 },
@@ -131,14 +154,16 @@ window.MazeGen = (function () {
     split(root, 0);
 
     let guard = 0;
-    while (leaves.length < targetLeaves && guard++ < 100) {
+    while (guard++ < 2500) {
       leaves.sort((a, b) => b.w * b.h - a.w * a.h);
       const node = leaves[0];
       const canW = node.w >= minLeafW * 2 + 1;
       const canH = node.h >= minLeafH * 2 + 1;
+      const mustSplit = oversized(node) && (canW || canH);
       if (!canW && !canH) break;
+      if (!mustSplit && leaves.length >= targetLeaves) break;
       leaves.shift();
-      const horizontal = canH && (!canW || node.h >= node.w);
+      const horizontal = canH && (!canW || node.h > node.w || (node.h === node.w && rng() < 0.5));
       if (!horizontal) {
         const minSplit = node.x + minLeafW;
         const maxSplit = node.x + node.w - minLeafW - 1;
@@ -199,9 +224,9 @@ window.MazeGen = (function () {
   }
 
   function carveDoorway(grid, edge, rng) {
-    const width = 2 + (rng() < 0.35 ? 1 : 0);
     const span = edge.hi - edge.lo + 1;
-    if (span < width) return null;
+    if (span < 2) return null;
+    const width = Math.min(span, 2 + (span >= 3 && rng() < 0.28 ? 1 : 0));
     let start;
     if (rng() < 0.55) {
       start = edge.lo + Math.floor(rng() * (span - width + 1));
@@ -524,7 +549,7 @@ window.MazeGen = (function () {
         { side: "w", facing: "e" },
         { side: "e", facing: "w" }
       ];
-      const count = 2 + Math.floor(rng() * 3);
+      const count = Math.min(r.w, r.h) <= 6 ? 1 + Math.floor(rng() * 2) : 2 + Math.floor(rng() * 3);
       for (let fi = 0; fi < count; fi++) {
         const s = furnSides[Math.floor(rng() * 4)];
         let fx, fy, fw, fh;
@@ -673,7 +698,7 @@ window.MazeGen = (function () {
       return Array(cols).fill(TILE.WALL);
     });
 
-    const margin = Math.max(6, Math.floor(cols * 0.07));
+    const margin = Math.max(3, Math.floor(cols * 0.035));
     const root = {
       x: margin,
       y: margin,
@@ -720,14 +745,24 @@ window.MazeGen = (function () {
     const allEdges = buildAdjacency(rooms);
     const ufAdj = ufMake(rooms.length);
     for (let i = 0; i < allEdges.length; i++) ufAdj.union(allEdges[i].i, allEdges[i].j);
-    const rootId = ufAdj.find(0);
-    for (let i = 1; i < rooms.length; i++) {
-      if (ufAdj.find(i) === rootId) continue;
+    // Join every adjacency component to the entrance component (live UF root —
+    // do not cache find() across unions; rank can re-parent the old root).
+    let linkGuard = 0;
+    while (linkGuard++ < rooms.length + 8) {
+      const main = ufAdj.find(startIdx);
+      let orphan = -1;
+      for (let i = 0; i < rooms.length; i++) {
+        if (ufAdj.find(i) !== main) {
+          orphan = i;
+          break;
+        }
+      }
+      if (orphan < 0) break;
       let best = null;
       let bestD = Infinity;
       for (let j = 0; j < rooms.length; j++) {
-        if (ufAdj.find(j) !== rootId) continue;
-        const ca = roomCenter(rooms[i]);
+        if (ufAdj.find(j) !== main) continue;
+        const ca = roomCenter(rooms[orphan]);
         const cb = roomCenter(rooms[j]);
         const d = Math.abs(ca.x - cb.x) + Math.abs(ca.y - cb.y);
         if (d < bestD) {
@@ -735,14 +770,20 @@ window.MazeGen = (function () {
           best = j;
         }
       }
-      if (best == null) continue;
-      punchRockLink(grid, rooms, i, best, cols, rows);
-      ufAdj.union(i, best);
-      const sw = sharedWall(rooms[i], rooms[best]);
+      if (best == null) break;
+      punchRockLink(grid, rooms, orphan, best, cols, rows);
+      ufAdj.union(orphan, best);
+      const sw = sharedWall(rooms[orphan], rooms[best]);
       allEdges.push({
-        i: i,
+        i: orphan,
         j: best,
-        wall: sw || { dir: "v", wall: roomCenter(rooms[i]).x, lo: roomCenter(rooms[i]).y, hi: roomCenter(rooms[i]).y + 1 }
+        wall:
+          sw || {
+            dir: "v",
+            wall: roomCenter(rooms[orphan]).x,
+            lo: roomCenter(rooms[orphan]).y,
+            hi: roomCenter(rooms[orphan]).y + 1
+          }
       });
     }
 
@@ -753,6 +794,71 @@ window.MazeGen = (function () {
         carveDoorway(grid, e.wall, rng);
       }
     }
+
+    // Guarantee start can walk to every room center (and thus the exit) on the grid.
+    (function ensureWalkableGraph() {
+      function reachableSet(fromX, fromY) {
+        const seen = {};
+        const q = [fromX + "," + fromY];
+        seen[q[0]] = true;
+        let qi = 0;
+        while (qi < q.length) {
+          const parts = q[qi++].split(",");
+          const x = +parts[0];
+          const y = +parts[1];
+          const nbs = [
+            [x + 1, y],
+            [x - 1, y],
+            [x, y + 1],
+            [x, y - 1]
+          ];
+          for (let ni = 0; ni < 4; ni++) {
+            const nx = nbs[ni][0];
+            const ny = nbs[ni][1];
+            if (ny < 1 || nx < 1 || ny >= rows - 1 || nx >= cols - 1) continue;
+            if (grid[ny][nx] === TILE.WALL) continue;
+            const key = nx + "," + ny;
+            if (seen[key]) continue;
+            seen[key] = true;
+            q.push(key);
+          }
+        }
+        return seen;
+      }
+      let guard = 0;
+      while (guard++ < rooms.length + 4) {
+        const sc = roomCenter(rooms[startIdx]);
+        const seen = reachableSet(sc.x, sc.y);
+        let orphan = -1;
+        let bestD = Infinity;
+        for (let i = 0; i < rooms.length; i++) {
+          const c = roomCenter(rooms[i]);
+          if (seen[c.x + "," + c.y]) continue;
+          const d = Math.abs(c.x - sc.x) + Math.abs(c.y - sc.y);
+          if (d < bestD) {
+            bestD = d;
+            orphan = i;
+          }
+        }
+        if (orphan < 0) break;
+        // Link orphan to nearest already-reachable room.
+        let best = startIdx;
+        let bestJD = Infinity;
+        for (let j = 0; j < rooms.length; j++) {
+          const c = roomCenter(rooms[j]);
+          if (!seen[c.x + "," + c.y]) continue;
+          const oc = roomCenter(rooms[orphan]);
+          const d = Math.abs(c.x - oc.x) + Math.abs(c.y - oc.y);
+          if (d < bestJD) {
+            bestJD = d;
+            best = j;
+          }
+        }
+        punchRockLink(grid, rooms, orphan, best, cols, rows);
+        const sw = sharedWall(rooms[orphan], rooms[best]);
+        if (sw) carveDoorway(grid, sw, rng);
+      }
+    })();
 
     const startRoom = rooms[startIdx];
     const exitRoom = rooms[exitIdx];
