@@ -1589,6 +1589,7 @@
   }
 
   function getViewTiles() {
+    // Approximate orthographic tile span (used for coarse follow deadzone only)
     const viewH = (canvas.height - ISO.padTop) / ISO.ky;
     const viewW = canvas.width / ISO.kx;
     return { viewW, viewH };
@@ -1604,8 +1605,189 @@
     };
   }
 
+  /** Inverse of worldToScreen for a target screen point (solve for world under camera). */
+  function screenToWorldDelta(sx, sy) {
+    // sx = dx*kx + dy*skew; sy = dy*ky + padTop
+    const dy = (sy - ISO.padTop) / ISO.ky;
+    const dx = (sx - dy * ISO.skew) / ISO.kx;
+    return { dx, dy };
+  }
+
   function depthOf(wx, wy) {
     return wy * 1000 + wx;
+  }
+
+  function regionPadBounds(reg) {
+    if (!reg) return null;
+    return {
+      left: reg.x - CAM_ROOM_PAD,
+      top: reg.y - CAM_ROOM_PAD - 0.35,
+      right: reg.x + reg.w + CAM_ROOM_PAD,
+      bottom: reg.y + reg.h + CAM_ROOM_PAD * 0.35
+    };
+  }
+
+  /** Project room corners with a candidate camera; return screen AABB. */
+  function projectBoundsWithCam(b, camX, camY) {
+    const corners = [
+      [b.left, b.top],
+      [b.right, b.top],
+      [b.left, b.bottom],
+      [b.right, b.bottom]
+    ];
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [wx, wy] of corners) {
+      const dx = wx - camX;
+      const dy = wy - camY;
+      const sx = dx * ISO.kx + dy * ISO.skew;
+      const sy = dy * ISO.ky + ISO.padTop;
+      if (sx < minX) minX = sx;
+      if (sy < minY) minY = sy;
+      if (sx > maxX) maxX = sx;
+      if (sy > maxY) maxY = sy;
+    }
+    // Account for north wall height rising above the north edge
+    minY -= ISO.wallH * 0.85;
+    return { minX, minY, maxX, maxY, w: maxX - minX, h: maxY - minY };
+  }
+
+  /** Camera that places world point (wx,wy) at canvas center. */
+  function cameraCenteringWorld(wx, wy) {
+    const targetSX = canvas.width / 2;
+    const targetSY = canvas.height / 2;
+    const dy = (targetSY - ISO.padTop) / ISO.ky;
+    const dx = (targetSX - dy * ISO.skew) / ISO.kx;
+    return { x: wx - dx, y: wy - dy };
+  }
+
+  /** Camera that centers the projected room AABB on the canvas (iso-correct). */
+  function cameraCenteringRegion(reg) {
+    const b = regionPadBounds(reg);
+    const cx = (b.left + b.right) / 2;
+    const cy = (b.top + b.bottom) / 2;
+    // First guess: center room midpoint on screen
+    let cam = cameraCenteringWorld(cx, cy);
+    // Measure projected AABB and shift camera so AABB center hits screen center
+    for (let i = 0; i < 3; i++) {
+      const bb = projectBoundsWithCam(b, cam.x, cam.y);
+      const midX = (bb.minX + bb.maxX) / 2;
+      const midY = (bb.minY + bb.maxY) / 2;
+      const errX = midX - canvas.width / 2;
+      const errY = midY - canvas.height / 2;
+      // Moving camera +dx,+dy moves screen by -dx*kx - dy*skew, -dy*ky
+      // Solve: -ddx*kx - ddy*skew = -errX  => ddx*kx + ddy*skew = errX
+      //        -ddy*ky = -errY => ddy = errY/ky
+      const ddy = errY / ISO.ky;
+      const ddx = (errX - ddy * ISO.skew) / ISO.kx;
+      cam = { x: cam.x + ddx, y: cam.y + ddy };
+    }
+    return cam;
+  }
+
+  function roomFitsOnScreen(reg) {
+    if (!reg) return false;
+    const b = regionPadBounds(reg);
+    const cam = cameraCenteringRegion(reg);
+    const bb = projectBoundsWithCam(b, cam.x, cam.y);
+    const margin = 18;
+    return bb.w <= canvas.width - margin * 2 && bb.h <= canvas.height - margin * 2;
+  }
+
+  function clampCameraToRegion(camX, camY, viewW, viewH, reg) {
+    if (!reg) {
+      return {
+        x: Math.max(0, Math.min(Math.max(0, maze.cols - viewW), camX)),
+        y: Math.max(0, Math.min(Math.max(0, maze.rows - viewH), camY))
+      };
+    }
+    const b = regionPadBounds(reg);
+    const fits = roomFitsOnScreen(reg);
+    if (fits) {
+      // Snap to iso-centered room framing
+      return cameraCenteringRegion(reg);
+    }
+    // Follow mode: keep player near center but clamp so we don't show huge void outside room
+    // Prefer keeping projected room overlapping most of the canvas
+    let x = camX;
+    let y = camY;
+    const ideal = cameraCenteringWorld(player.x, player.y);
+    x = ideal.x;
+    y = ideal.y;
+    // Soft clamp: if projected room AABB drifts too far off-screen, pull back
+    const bb = projectBoundsWithCam(b, x, y);
+    const pad = 40;
+    let shiftSX = 0;
+    let shiftSY = 0;
+    if (bb.maxX < canvas.width * 0.35) shiftSX = canvas.width * 0.35 - bb.maxX;
+    if (bb.minX > canvas.width * 0.65) shiftSX = canvas.width * 0.65 - bb.minX;
+    if (bb.maxY < canvas.height * 0.35) shiftSY = canvas.height * 0.35 - bb.maxY;
+    if (bb.minY > canvas.height * 0.65) shiftSY = canvas.height * 0.65 - bb.minY;
+    if (shiftSX || shiftSY) {
+      const ddy = shiftSY / ISO.ky;
+      const ddx = (shiftSX - ddy * ISO.skew) / ISO.kx;
+      // Moving camera opposite to screen shift
+      x -= ddx;
+      y -= ddy;
+    }
+    return { x, y };
+  }
+
+  function updateCamera(dt) {
+    const { viewW, viewH } = getViewTiles();
+    const reg = getRegionAtWorld(player.x, player.y);
+    const rid = regionIdOf(reg);
+    const roomFits = roomFitsOnScreen(reg);
+
+    if (!camera.initialized) {
+      let cam;
+      if (roomFits && reg) cam = cameraCenteringRegion(reg);
+      else cam = cameraCenteringWorld(player.x, player.y);
+      const clamped = clampCameraToRegion(cam.x, cam.y, viewW, viewH, reg);
+      camera.x = clamped.x;
+      camera.y = clamped.y;
+      camera.regionId = rid;
+      camera.transitioning = false;
+      camera.fitRoom = roomFits;
+      camera.initialized = true;
+      return;
+    }
+
+    if (rid !== camera.regionId) {
+      camera.regionId = rid;
+      camera.transitioning = true;
+    }
+    camera.fitRoom = roomFits;
+
+    let target;
+    if (roomFits && reg) {
+      target = cameraCenteringRegion(reg);
+      // Tiny player bias in world space
+      target.x += (player.x - (reg.x + reg.w / 2)) * 0.04;
+      target.y += (player.y - (reg.y + reg.h / 2)) * 0.04;
+    } else {
+      target = cameraCenteringWorld(player.x, player.y);
+    }
+
+    const clampedTarget = clampCameraToRegion(target.x, target.y, viewW, viewH, reg);
+    let targetX = clampedTarget.x;
+    let targetY = clampedTarget.y;
+
+    const lerpRate = camera.transitioning ? CAM_ROOM_TRANSITION : CAM_LERP;
+    const k = 1 - Math.exp(-lerpRate * dt);
+    camera.x += (targetX - camera.x) * k;
+    camera.y += (targetY - camera.y) * k;
+
+    const hard = clampCameraToRegion(camera.x, camera.y, viewW, viewH, reg);
+    camera.x += (hard.x - camera.x) * Math.min(1, k * 1.5);
+    camera.y += (hard.y - camera.y) * Math.min(1, k * 1.5);
+
+    if (
+      camera.transitioning &&
+      Math.abs(camera.x - targetX) < 0.05 &&
+      Math.abs(camera.y - targetY) < 0.05
+    ) {
+      camera.transitioning = false;
+    }
   }
 
   /** South (near) wall of the current room — hide so we look into the space. */
@@ -1647,132 +1829,6 @@
     ];
   }
 
-  function clampCameraToRegion(camX, camY, viewW, viewH, reg) {
-    if (!reg) {
-      return {
-        x: Math.max(0, Math.min(Math.max(0, maze.cols - viewW), camX)),
-        y: Math.max(0, Math.min(Math.max(0, maze.rows - viewH), camY))
-      };
-    }
-    // Extra north pad for raised walls; small south pad (near wall omitted)
-    const left = reg.x - CAM_ROOM_PAD;
-    const top = reg.y - CAM_ROOM_PAD - 0.35;
-    const right = reg.x + reg.w + CAM_ROOM_PAD;
-    const bottom = reg.y + reg.h + CAM_ROOM_PAD * 0.35;
-    const rw = right - left;
-    const rh = bottom - top;
-
-    let x = camX;
-    let y = camY;
-    if (viewW >= rw) {
-      x = left + rw / 2 - viewW / 2;
-    } else {
-      x = Math.max(left, Math.min(right - viewW, x));
-    }
-    if (viewH >= rh) {
-      // Bias slightly south so we look into the room
-      y = top + rh / 2 - viewH / 2 + rh * 0.06;
-    } else {
-      y = Math.max(top, Math.min(bottom - viewH, y));
-    }
-    return { x, y };
-  }
-
-  function updateCamera(dt) {
-    const { viewW, viewH } = getViewTiles();
-    const reg = getRegionAtWorld(player.x, player.y);
-    const rid = regionIdOf(reg);
-
-    // Room padded bounds (mid-wall pad) — fit = whole room visible
-    let roomFits = false;
-    if (reg) {
-      const left = reg.x - CAM_ROOM_PAD;
-      const top = reg.y - CAM_ROOM_PAD - 0.35;
-      const right = reg.x + reg.w + CAM_ROOM_PAD;
-      const bottom = reg.y + reg.h + CAM_ROOM_PAD * 0.35;
-      const rw = right - left;
-      const rh = bottom - top;
-      roomFits = viewW >= rw && viewH >= rh;
-    }
-
-    if (!camera.initialized) {
-      let cx = player.x - viewW / 2;
-      let cy = player.y - viewH / 2;
-      if (roomFits && reg) {
-        // Center on the room so the whole chamber is visible
-        cx = reg.x + reg.w / 2 - viewW / 2;
-        cy = reg.y + reg.h / 2 - viewH / 2 + reg.h * 0.04;
-      }
-      const clamped = clampCameraToRegion(cx, cy, viewW, viewH, reg);
-      camera.x = clamped.x;
-      camera.y = clamped.y;
-      camera.regionId = rid;
-      camera.transitioning = false;
-      camera.fitRoom = roomFits;
-      camera.initialized = true;
-      return;
-    }
-
-    if (rid !== camera.regionId) {
-      camera.regionId = rid;
-      camera.transitioning = true;
-    }
-    camera.fitRoom = roomFits;
-
-    let targetX = camera.x;
-    let targetY = camera.y;
-
-    if (roomFits && reg) {
-      // Prefer: fit-to-room — center on current room (tiny player bias for feel)
-      targetX = reg.x + reg.w / 2 - viewW / 2 + (player.x - (reg.x + reg.w / 2)) * 0.06;
-      targetY =
-        reg.y + reg.h / 2 - viewH / 2 + (player.y - (reg.y + reg.h / 2)) * 0.05 + reg.h * 0.04;
-    } else {
-      // Room too big: follow camera tracking the player, still room-locked (mid-wall clamp)
-      const halfW = viewW / 2;
-      const halfH = viewH / 2;
-      const deadW = halfW * CAM_EDGE_FOLLOW;
-      const deadH = halfH * CAM_EDGE_FOLLOW;
-      const screenX = player.x - camera.x;
-      const screenY = player.y - camera.y;
-      if (screenX > halfW + deadW) targetX = player.x - (halfW + deadW);
-      else if (screenX < halfW - deadW) targetX = player.x - (halfW - deadW);
-      if (screenY > halfH + deadH) targetY = player.y - (halfH + deadH);
-      else if (screenY < halfH - deadH) targetY = player.y - (halfH - deadH);
-      // If only one axis fits, center that axis on the room
-      if (reg) {
-        const rw = reg.w + CAM_ROOM_PAD * 2;
-        const rh = reg.h + CAM_ROOM_PAD * 2;
-        if (viewW >= rw) {
-          targetX = reg.x + reg.w / 2 - viewW / 2;
-        }
-        if (viewH >= rh) {
-          targetY = reg.y + reg.h / 2 - viewH / 2 + reg.h * 0.04;
-        }
-      }
-    }
-
-    const clampedTarget = clampCameraToRegion(targetX, targetY, viewW, viewH, reg);
-    targetX = clampedTarget.x;
-    targetY = clampedTarget.y;
-
-    const lerpRate = camera.transitioning ? CAM_ROOM_TRANSITION : CAM_LERP;
-    const k = 1 - Math.exp(-lerpRate * dt);
-    camera.x += (targetX - camera.x) * k;
-    camera.y += (targetY - camera.y) * k;
-
-    const hard = clampCameraToRegion(camera.x, camera.y, viewW, viewH, reg);
-    camera.x += (hard.x - camera.x) * Math.min(1, k * 1.4);
-    camera.y += (hard.y - camera.y) * Math.min(1, k * 1.4);
-
-    if (
-      camera.transitioning &&
-      Math.abs(camera.x - targetX) < 0.04 &&
-      Math.abs(camera.y - targetY) < 0.04
-    ) {
-      camera.transitioning = false;
-    }
-  }
 
 
   // --- Rendering ---
