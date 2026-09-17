@@ -53,14 +53,159 @@
   const SUCC_HEAR_RANGE = 14;
 
   // Flying tickly minion visual varieties (behavior identical)
+  // art keys prefer dark-fantasy styled PNGs matching succubus look
   const MINION_TYPES = [
-    { id: "bat", body: "#a78bfa", wing: "#7c3aed", eye: "#fde047", accent: "#c4b5fd", wingStyle: "bat" },
-    { id: "moth", body: "#f9a8d4", wing: "#fbcfe8", eye: "#fff7ed", accent: "#fce7f3", wingStyle: "moth" },
-    { id: "imp", body: "#fb923c", wing: "#ea580c", eye: "#fef08a", accent: "#fdba74", wingStyle: "pointy" },
-    { id: "wisp", body: "#67e8f9", wing: "#22d3ee", eye: "#ecfeff", accent: "#a5f3fc", wingStyle: "wispy" },
-    { id: "beetle", body: "#86efac", wing: "#4ade80", eye: "#fef9c3", accent: "#bbf7d0", wingStyle: "bug" },
-    { id: "raven", body: "#c084fc", wing: "#6b21a8", eye: "#fde68a", accent: "#e9d5ff", wingStyle: "raven" }
+    { id: "bat", body: "#a78bfa", wing: "#7c3aed", eye: "#fde047", accent: "#c4b5fd", wingStyle: "bat", art: "minion1" },
+    { id: "moth", body: "#f9a8d4", wing: "#fbcfe8", eye: "#fff7ed", accent: "#fce7f3", wingStyle: "moth", art: "minion2" },
+    { id: "imp", body: "#fb923c", wing: "#ea580c", eye: "#fef08a", accent: "#fdba74", wingStyle: "pointy", art: "minion1" },
+    { id: "wisp", body: "#67e8f9", wing: "#22d3ee", eye: "#ecfeff", accent: "#a5f3fc", wingStyle: "wispy", art: "minion2" },
+    { id: "beetle", body: "#86efac", wing: "#4ade80", eye: "#fef9c3", accent: "#bbf7d0", wingStyle: "bug", art: "minion1" },
+    { id: "raven", body: "#c084fc", wing: "#6b21a8", eye: "#fde68a", accent: "#e9d5ff", wingStyle: "raven", art: "minion2" }
   ];
+
+  // --- Image art (preload; strip near-black BG for JPG / opaque sprites) ---
+  // Prefer *-styled.png (same dark-fantasy illustration look as succubi).
+  const ART_SRCS = {
+    player: "assets/player/player-styled.png",
+    succubus1: "assets/succubus/succubus-1.jpg",
+    succubus2: "assets/succubus/succubus-2.jpg",
+    succubusAlt: "assets/succubus/succubus-alt.jpg",
+    trap: "assets/trap/trap-styled.png",
+    minion1: "assets/minions/minion-styled-1.png",
+    minion2: "assets/minions/minion-styled-2.png",
+    sceneFeet: "assets/scenes/feet-styled.png",
+    sceneBelly: "assets/scenes/belly-styled.png",
+    sceneTied: "assets/scenes/tied-01.png"
+  };
+  // Fallbacks if a styled file is missing (kept for robustness; prefer styled)
+  const ART_FALLBACKS = {
+    player: "assets/player/player.jpg",
+    trap: "assets/trap/trap-hands.jpg",
+    minion1: "assets/minions/minion-imp.png",
+    minion2: "assets/minions/minion-moth.png",
+    sceneFeet: "assets/scenes/feet-01.png",
+    sceneBelly: "assets/scenes/belly-01.png",
+    sceneTied: "assets/scenes/tied-01.png"
+  };
+  const ART = Object.create(null);
+  let artReady = false;
+
+  // Drawn heights (upright billboards). Minions = 1/4 succubus height.
+  const SUCC_DRAW_H = 58 * SP;
+  const MINION_DRAW_H = SUCC_DRAW_H * 0.25;
+  const PLAYER_DRAW_H = 52 * SP;
+  const TRAP_DRAW_H = 36 * SP;
+
+  function stripBlackBackground(img, threshold) {
+    threshold = threshold == null ? 28 : threshold;
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth || img.width;
+    c.height = img.naturalHeight || img.height;
+    const cx = c.getContext("2d");
+    cx.drawImage(img, 0, 0);
+    let id;
+    try {
+      id = cx.getImageData(0, 0, c.width, c.height);
+    } catch (_) {
+      return c;
+    }
+    const d = id.data;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i] <= threshold && d[i + 1] <= threshold && d[i + 2] <= threshold) {
+        d[i + 3] = 0;
+      }
+    }
+    cx.putImageData(id, 0, 0);
+    return c;
+  }
+
+  function loadArtImage(key, src, fallbackSrc) {
+    return new Promise((resolve) => {
+      const img = new Image();
+      ART[key] = { img: null, canvas: null, ready: false, src };
+      const finishOk = () => {
+        try {
+          const canvas = stripBlackBackground(img, 30);
+          ART[key] = { img, canvas, ready: true, src: img.src };
+        } catch (_) {
+          ART[key] = { img, canvas: img, ready: true, src: img.src };
+        }
+        resolve(true);
+      };
+      img.onload = finishOk;
+      img.onerror = () => {
+        if (fallbackSrc && img.src.indexOf(fallbackSrc) < 0) {
+          img.src = fallbackSrc;
+          return;
+        }
+        ART[key] = { img: null, canvas: null, ready: false, src };
+        resolve(false);
+      };
+      img.src = src;
+    });
+  }
+
+  function preloadArt() {
+    const jobs = Object.keys(ART_SRCS).map((k) =>
+      loadArtImage(k, ART_SRCS[k], ART_FALLBACKS[k] || null)
+    );
+    return Promise.all(jobs).then(() => {
+      artReady = true;
+      if (window.SCENE_POOLS) {
+        const seen = Object.create(null);
+        for (const type of Object.keys(window.SCENE_POOLS)) {
+          for (const sc of window.SCENE_POOLS[type]) {
+            if (sc.image && !seen[sc.image]) {
+              seen[sc.image] = true;
+              const key = "path:" + sc.image;
+              if (!ART[key] || !ART[key].ready) {
+                const fb = sc.imageFallback || null;
+                loadArtImage(key, sc.image, fb);
+              }
+            }
+          }
+        }
+      }
+      return artReady;
+    });
+  }
+
+  function getArt(key) {
+    const a = ART[key];
+    return a && a.ready ? a : null;
+  }
+
+  function getArtByPath(path) {
+    if (!path) return null;
+    const keyed = getArt("path:" + path);
+    if (keyed) return keyed;
+    if (path.indexOf("feet") >= 0) return getArt("sceneFeet");
+    if (path.indexOf("belly") >= 0) return getArt("sceneBelly");
+    if (path.indexOf("tied") >= 0) return getArt("sceneTied");
+    return null;
+  }
+
+  /** Upright billboard; footX/footY = ground contact in screen space. */
+  function drawArtBillboard(art, footX, footY, drawH, opts) {
+    opts = opts || {};
+    if (!art || !art.ready) return false;
+    const src = art.canvas || art.img;
+    if (!src) return false;
+    const sw = src.width || src.naturalWidth;
+    const sh = src.height || src.naturalHeight;
+    if (!sw || !sh) return false;
+    const aspect = sw / sh;
+    let drawW = drawH * aspect;
+    if (drawW > drawH * 1.4) drawW = drawH * 1.4;
+    const alpha = opts.alpha != null ? opts.alpha : 1;
+    ctx.save();
+    if (alpha < 1) ctx.globalAlpha *= alpha;
+    ctx.drawImage(src, footX - drawW / 2, footY - drawH, drawW, drawH);
+    ctx.restore();
+    return true;
+  }
+
+  preloadArt();
 
   // --- DOM ---
   const $ = (id) => document.getElementById(id);
@@ -223,9 +368,25 @@
     } catch (_) {}
   }
 
+  function nearestSuccubus() {
+    let best = null;
+    let bestD = Infinity;
+    for (const e of enemies) {
+      if (e.kind !== "succubus") continue;
+      const d = Math.hypot(player.x - e.x, player.y - e.y);
+      if (d < bestD) {
+        bestD = d;
+        best = e;
+      }
+    }
+    return best;
+  }
+
   function updateHeartbeat(dt) {
-    if (mode !== "play" || !succubusRef || !player) return;
-    const dist = Math.hypot(player.x - succubusRef.x, player.y - succubusRef.y);
+    if (mode !== "play" || !player) return;
+    const near = nearestSuccubus() || succubusRef;
+    if (!near) return;
+    const dist = Math.hypot(player.x - near.x, player.y - near.y);
     if (dist > SUCC_HEAR_RANGE) {
       heartbeat.next = Math.max(heartbeat.next, 0.4);
       return;
@@ -330,51 +491,22 @@
     enemies = [];
     succubusRef = null;
     const spawns = (maze.enemySpawns && maze.enemySpawns.slice()) || [];
-    // Guarantee at least one spawn slot for the succubus
-    if (!spawns.length) {
+    // Level >= 5: two succubi (succubus-1 + succubus-2); L1–4: one
+    const succWanted = level >= 5 ? 2 : 1;
+    // Guarantee enough spawn slots
+    while (spawns.length < succWanted) {
       const far =
         (window.MazeGen.randomFloorFar &&
-          window.MazeGen.randomFloorFar(maze, maze.start.x, maze.start.y, 10)) ||
+          window.MazeGen.randomFloorFar(maze, maze.start.x, maze.start.y, 10 + spawns.length * 2)) ||
         null;
-      spawns.push(far || { x: maze.start.x + 3, y: maze.start.y });
+      spawns.push(far || { x: maze.start.x + 3 + spawns.length, y: maze.start.y });
     }
-    spawns.forEach((s, i) => {
-      const isSucc = i === 0;
-      const mt = MINION_TYPES[(i - 1) % MINION_TYPES.length];
-      const e = {
+    function makeSuccubus(s, variant) {
+      return {
         x: s.x + 0.5,
         y: s.y + 0.5,
-        kind: isSucc ? "succubus" : "minion",
-        minionType: isSucc ? null : mt.id,
-        sprite: isSucc ? null : mt,
-        speed: isSucc ? SUCC_WANDER : MINION_SPEED,
-        wanderSpeed: isSucc ? SUCC_WANDER : MINION_SPEED,
-        chaseSpeed: isSucc ? SUCC_CHASE : MINION_SPEED * 1.15,
-        awareness: isSucc ? SUCC_LOS_RANGE : 14,
-        pathTimer: 0,
-        path: [],
-        anim: Math.random() * Math.PI * 2,
-        scared: false,
-        fleeUntil: 0,
-        fleeing: false,
-        despawnAt: 0,
-        hasSight: false,
-        chasing: false,
-        wanderTarget: null
-      };
-      enemies.push(e);
-      if (isSucc) succubusRef = e;
-    });
-    // Hard guarantee: if somehow missing, inject succubus far from player
-    if (!succubusRef) {
-      const far =
-        (window.MazeGen.randomFloorFar &&
-          window.MazeGen.randomFloorFar(maze, player.x, player.y, 12)) ||
-        { x: maze.exit.x, y: maze.exit.y };
-      const e = {
-        x: far.x + 0.5,
-        y: far.y + 0.5,
         kind: "succubus",
+        succVariant: variant, // 1 or 2
         minionType: null,
         sprite: null,
         speed: SUCC_WANDER,
@@ -390,10 +522,57 @@
         despawnAt: 0,
         hasSight: false,
         chasing: false,
-        wanderTarget: null
+        wanderTarget: null,
+        flankSide: variant === 1 ? -1 : 1
       };
+    }
+    let succSpawned = 0;
+    spawns.forEach((s, i) => {
+      const isSucc = succSpawned < succWanted && i < succWanted;
+      if (isSucc) {
+        const variant = succSpawned + 1;
+        const e = makeSuccubus(s, variant);
+        enemies.push(e);
+        if (!succubusRef) succubusRef = e;
+        succSpawned++;
+        return;
+      }
+      const mt = MINION_TYPES[(i - succWanted) % MINION_TYPES.length];
+      const e = {
+        x: s.x + 0.5,
+        y: s.y + 0.5,
+        kind: "minion",
+        succVariant: null,
+        minionType: mt.id,
+        sprite: mt,
+        speed: MINION_SPEED,
+        wanderSpeed: MINION_SPEED,
+        chaseSpeed: MINION_SPEED * 1.15,
+        awareness: 14,
+        pathTimer: 0,
+        path: [],
+        anim: Math.random() * Math.PI * 2,
+        scared: false,
+        fleeUntil: 0,
+        fleeing: false,
+        despawnAt: 0,
+        hasSight: false,
+        chasing: false,
+        wanderTarget: null,
+        flankSide: 0
+      };
+      enemies.push(e);
+    });
+    // Hard guarantee: inject missing succubi far from player
+    while (succSpawned < succWanted) {
+      const far =
+        (window.MazeGen.randomFloorFar &&
+          window.MazeGen.randomFloorFar(maze, player.x, player.y, 12 + succSpawned * 3)) ||
+        { x: maze.exit.x, y: maze.exit.y };
+      const e = makeSuccubus(far, succSpawned + 1);
       enemies.unshift(e);
-      succubusRef = e;
+      if (!succubusRef) succubusRef = e;
+      succSpawned++;
     }
     particles = [];
     floatTexts = [];
@@ -576,7 +755,8 @@
     const sideDy = player.facingDx;
     const toEx = e.x - player.x;
     const toEy = e.y - player.y;
-    const sideSign = toEx * sideDx + toEy * sideDy >= 0 ? 1 : -1;
+    let sideSign = toEx * sideDx + toEy * sideDy >= 0 ? 1 : -1;
+    if (e.flankSide === -1 || e.flankSide === 1) sideSign = e.flankSide;
 
     const candidates = [];
     const dists = preferClose ? [0.85, 1.2, 1.55, 2.0] : [1.5, 2.1, 2.7, 3.4, 4.2];
@@ -749,11 +929,13 @@
     for (const e of order) {
       respawnCreature(e, true);
     }
-    if (succubusRef) {
-      succubusRef.hasSight = false;
-      succubusRef.chasing = false;
-      succubusRef.speed = succubusRef.wanderSpeed;
+    for (const e of enemies) {
+      if (e.kind !== "succubus") continue;
+      e.hasSight = false;
+      e.chasing = false;
+      e.speed = e.wanderSpeed;
     }
+    succubusRef = enemies.find((e) => e.kind === "succubus") || null;
   }
 
   function updateEnemies(dt) {
@@ -896,7 +1078,10 @@
   }
 
   function succubusActivelyChasing() {
-    return !!(succubusRef && succubusRef.hasSight && succubusRef.chasing);
+    for (const e of enemies) {
+      if (e.kind === "succubus" && e.hasSight && e.chasing) return true;
+    }
+    return false;
   }
 
   // --- Pickups / traps ---
@@ -1084,17 +1269,64 @@
     const w = cineCanvas.width,
       h = cineCanvas.height;
     cineCtx.clearRect(0, 0, w, h);
+
+    const scene = resistState && resistState.scene ? resistState.scene : null;
+    let art = null;
+    if (scene && scene.image) art = getArtByPath(scene.image);
+    if (!art) {
+      if (type === "feet") art = getArt("sceneFeet");
+      else if (type === "belly") art = getArt("sceneBelly");
+      else art = getArt("sceneTied") || getArt("sceneBelly") || getArt("sceneFeet");
+    }
+
+    const tintMap = {
+      rose: "rgba(255, 120, 160, 0.28)",
+      magenta: "rgba(220, 60, 180, 0.28)",
+      violet: "rgba(140, 80, 220, 0.28)",
+      warm: "rgba(255, 160, 80, 0.22)"
+    };
+
+    if (art && art.ready) {
+      const src = art.canvas || art.img;
+      const sw = src.width || src.naturalWidth;
+      const sh = src.height || src.naturalHeight;
+      // Cover-fit with optional crop bias
+      const crop = (scene && scene.crop) || "center";
+      const scale = Math.max(w / sw, h / sh) * (crop === "center" ? 1 : 1.12);
+      let dw = sw * scale, dh = sh * scale;
+      let dx = (w - dw) / 2, dy = (h - dh) / 2;
+      if (crop === "left") dx = 0;
+      else if (crop === "right") dx = w - dw;
+      else if (crop === "top") dy = 0;
+      else if (crop === "bottom") dy = h - dh;
+      cineCtx.drawImage(src, dx, dy, dw, dh);
+      // Dark vignette for text readability
+      const vg = cineCtx.createLinearGradient(0, 0, 0, h);
+      vg.addColorStop(0, "rgba(8,4,16,0.15)");
+      vg.addColorStop(0.55, "rgba(8,4,16,0.05)");
+      vg.addColorStop(1, "rgba(8,4,16,0.55)");
+      cineCtx.fillStyle = vg;
+      cineCtx.fillRect(0, 0, w, h);
+      if (scene && scene.tint && tintMap[scene.tint]) {
+        cineCtx.fillStyle = tintMap[scene.tint];
+        cineCtx.fillRect(0, 0, w, h);
+      }
+      cineCtx.fillStyle = "#ff6bcb";
+      cineCtx.font = "bold 16px Segoe UI, sans-serif";
+      cineCtx.fillText(
+        type === "feet" ? "✦ FEET ✦" : type === "belly" ? "✦ BELLY / FLANKS ✦" : "✦ TIED DOWN ✦",
+        24,
+        h - 18
+      );
+      return;
+    }
+
+    // Vector fallback
     const g = cineCtx.createLinearGradient(0, 0, 0, h);
     g.addColorStop(0, "#1a0c28");
     g.addColorStop(1, "#080410");
     cineCtx.fillStyle = g;
     cineCtx.fillRect(0, 0, w, h);
-    for (let i = 0; i < 5; i++) {
-      cineCtx.fillStyle = `rgba(255,154,60,${0.15 + Math.random() * 0.1})`;
-      cineCtx.beginPath();
-      cineCtx.arc(80 + i * 120, 40, 30 + Math.random() * 10, 0, Math.PI * 2);
-      cineCtx.fill();
-    }
     function body(x, y, color, scale) {
       cineCtx.fillStyle = color;
       cineCtx.beginPath();
@@ -1105,30 +1337,7 @@
       cineCtx.fill();
     }
     body(w * 0.72, h * 0.55, "#c040a0", 1.15);
-    cineCtx.strokeStyle = "#ff6bcb";
-    cineCtx.lineWidth = 3;
-    cineCtx.beginPath();
-    cineCtx.moveTo(w * 0.72 - 10, h * 0.55 - 42);
-    cineCtx.quadraticCurveTo(w * 0.72 - 18, h * 0.55 - 70, w * 0.72 - 4, h * 0.55 - 55);
-    cineCtx.moveTo(w * 0.72 + 10, h * 0.55 - 42);
-    cineCtx.quadraticCurveTo(w * 0.72 + 18, h * 0.55 - 70, w * 0.72 + 4, h * 0.55 - 55);
-    cineCtx.stroke();
-    cineCtx.fillStyle = "rgba(140,60,180,0.5)";
-    cineCtx.beginPath();
-    cineCtx.ellipse(w * 0.72 - 40, h * 0.5, 28, 18, -0.5, 0, Math.PI * 2);
-    cineCtx.ellipse(w * 0.72 + 40, h * 0.5, 28, 18, 0.5, 0, Math.PI * 2);
-    cineCtx.fill();
     body(w * 0.35, h * 0.62, "#7ec8ff", 1);
-    cineCtx.fillStyle = "#fde047";
-    for (let i = 0; i < 18; i++) {
-      const sx = w * 0.35 + (Math.random() - 0.5) * 80;
-      const sy =
-        h * (type === "feet" ? 0.82 : type === "belly" ? 0.58 : 0.65) +
-        (Math.random() - 0.5) * 40;
-      cineCtx.beginPath();
-      cineCtx.arc(sx, sy, 2 + Math.random() * 3, 0, Math.PI * 2);
-      cineCtx.fill();
-    }
     cineCtx.fillStyle = "#ff6bcb";
     cineCtx.font = "bold 16px Segoe UI, sans-serif";
     cineCtx.fillText(
@@ -1466,18 +1675,34 @@
   // --- Rendering ---
     // --- Rendering ---
   function drawSuccubusSprite(ex, ey, e) {
-    const flap = Math.sin(e.anim * 1.6) * 0.35;
+    // Soft magenta aura under the billboard
     const glow = 0.45 + Math.sin(e.anim) * 0.2;
-    // Magenta aura — always readable
     const aura = ctx.createRadialGradient(ex, ey, 4 * SP, ex, ey, 28 * SP);
-    aura.addColorStop(0, `rgba(255, 80, 180, ${0.55 * glow})`);
-    aura.addColorStop(0.55, `rgba(200, 40, 140, ${0.22 * glow})`);
+    aura.addColorStop(0, `rgba(255, 80, 180, ${0.45 * glow})`);
+    aura.addColorStop(0.55, `rgba(200, 40, 140, ${0.18 * glow})`);
     aura.addColorStop(1, "rgba(120, 20, 80, 0)");
     ctx.fillStyle = aura;
     ctx.beginPath();
     ctx.arc(ex, ey, 28 * SP, 0, Math.PI * 2);
     ctx.fill();
-    // Bat wings
+
+    const variant = e.succVariant === 2 ? 2 : 1;
+    let art = getArt(variant === 2 ? "succubus2" : "succubus1");
+    if (!art) art = getArt("succubusAlt") || getArt("succubus1") || getArt("succubus2");
+    const footY = ey + 16 * SP;
+    if (drawArtBillboard(art, ex, footY, SUCC_DRAW_H, { alpha: 1 })) {
+      if (e.hasSight) {
+        ctx.strokeStyle = `rgba(255, 100, 200, ${0.35 + glow * 0.4})`;
+        ctx.lineWidth = 2 * SP;
+        ctx.beginPath();
+        ctx.arc(ex, ey, (18 + Math.sin(e.anim) * 3) * SP, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      return;
+    }
+
+    // Vector fallback if art failed to load
+    const flap = Math.sin(e.anim * 1.6) * 0.35;
     ctx.fillStyle = e.hasSight ? "rgba(160, 40, 120, 0.85)" : "rgba(120, 30, 100, 0.75)";
     ctx.beginPath();
     ctx.moveTo(ex - 6 * SP, ey);
@@ -1491,26 +1716,14 @@
     ctx.quadraticCurveTo(ex + 20 * SP, ey + 6 * SP, ex + 8 * SP, ey + 4 * SP);
     ctx.closePath();
     ctx.fill();
-    // Wing membrane ribs
-    ctx.strokeStyle = "rgba(255, 140, 200, 0.45)";
-    ctx.lineWidth = 1.2 * SP;
-    ctx.beginPath();
-    ctx.moveTo(ex - 8 * SP, ey);
-    ctx.lineTo(ex - 24 * SP, ey - 6 * SP - flap * 6 * SP);
-    ctx.moveTo(ex + 8 * SP, ey);
-    ctx.lineTo(ex + 24 * SP, ey - 6 * SP - flap * 6 * SP);
-    ctx.stroke();
-    // Body
     ctx.fillStyle = e.hasSight ? "#e050b0" : "#c040a0";
     ctx.beginPath();
     ctx.ellipse(ex, ey + 1 * SP, 12 * SP, 15 * SP, 0, 0, Math.PI * 2);
     ctx.fill();
-    // Head
     ctx.fillStyle = "#d060b0";
     ctx.beginPath();
     ctx.arc(ex, ey - 12 * SP, 9 * SP, 0, Math.PI * 2);
     ctx.fill();
-    // Horns
     ctx.strokeStyle = "#ff6bcb";
     ctx.lineWidth = 2.5 * SP;
     ctx.lineCap = "round";
@@ -1520,39 +1733,32 @@
     ctx.moveTo(ex + 5 * SP, ey - 16 * SP);
     ctx.quadraticCurveTo(ex + 10 * SP, ey - 28 * SP, ex + 3 * SP, ey - 24 * SP);
     ctx.stroke();
-    // Eyes
     ctx.fillStyle = e.hasSight ? "#fff7ae" : "#ffe4f0";
     ctx.beginPath();
     ctx.arc(ex - 3.5 * SP, ey - 12 * SP, 2.2 * SP, 0, Math.PI * 2);
     ctx.arc(ex + 3.5 * SP, ey - 12 * SP, 2.2 * SP, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "#2a0618";
-    ctx.beginPath();
-    ctx.arc(ex - 3.5 * SP, ey - 12 * SP, 1 * SP, 0, Math.PI * 2);
-    ctx.arc(ex + 3.5 * SP, ey - 12 * SP, 1 * SP, 0, Math.PI * 2);
-    ctx.fill();
-    // Pulse ring when chasing
-    ctx.strokeStyle = `rgba(255, 100, 200, ${0.35 + glow * 0.4})`;
-    ctx.lineWidth = 2 * SP;
-    ctx.beginPath();
-    ctx.arc(ex, ey, (18 + Math.sin(e.anim) * 3) * SP, 0, Math.PI * 2);
-    ctx.stroke();
   }
 
   function drawMinionSprite(ex, ey, e) {
     const t = e.sprite || MINION_TYPES[0];
-    const flap = Math.sin(e.anim * 2.4 + (e.x || 0)) * 0.5;
     const bob = Math.sin(e.anim * 1.8) * 1.5 * SP;
     const cy = ey + bob;
-    // Soft glow
-    ctx.fillStyle = t.accent + "55";
+    const artKey = (t && t.art) || "minion1";
+    let art = getArt(artKey);
+    if (!art) art = getArt(artKey === "minion2" ? "minion1" : "minion2");
+    // Soft glow under sprite
+    ctx.fillStyle = ((t && t.accent) || "#c4b5fd") + "55";
     ctx.beginPath();
-    ctx.arc(ex, cy, 14 * SP, 0, Math.PI * 2);
+    ctx.arc(ex, cy, 10 * SP, 0, Math.PI * 2);
     ctx.fill();
-
-    // Wings by style
-    ctx.fillStyle = t.wing;
-    const style = t.wingStyle;
+    if (drawArtBillboard(art, ex, cy + MINION_DRAW_H * 0.35, MINION_DRAW_H, { alpha: 1 })) {
+      return;
+    }
+    // Vector fallback (legacy stick/silhouette)
+    const flap = Math.sin(e.anim * 2.4 + (e.x || 0)) * 0.5;
+    ctx.fillStyle = (t && t.wing) || "#7c3aed";
+    const style = (t && t.wingStyle) || "bat";
     if (style === "bat" || style === "raven") {
       const span = style === "raven" ? 18 : 15;
       ctx.beginPath();
@@ -1567,106 +1773,50 @@
       ctx.quadraticCurveTo(ex + 12 * SP, cy + 5 * SP, ex + 4 * SP, cy + 3 * SP);
       ctx.closePath();
       ctx.fill();
-    } else if (style === "moth") {
+    } else {
       ctx.beginPath();
       ctx.ellipse(ex - 10 * SP, cy - flap * 3 * SP, 9 * SP, 7 * SP, -0.4, 0, Math.PI * 2);
       ctx.ellipse(ex + 10 * SP, cy - flap * 3 * SP, 9 * SP, 7 * SP, 0.4, 0, Math.PI * 2);
       ctx.fill();
-      ctx.fillStyle = t.accent + "aa";
-      ctx.beginPath();
-      ctx.ellipse(ex - 10 * SP, cy - flap * 3 * SP, 4 * SP, 3 * SP, -0.4, 0, Math.PI * 2);
-      ctx.ellipse(ex + 10 * SP, cy - flap * 3 * SP, 4 * SP, 3 * SP, 0.4, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (style === "pointy") {
-      ctx.beginPath();
-      ctx.moveTo(ex - 3 * SP, cy);
-      ctx.lineTo(ex - 16 * SP, cy - 12 * SP - flap * 6 * SP);
-      ctx.lineTo(ex - 6 * SP, cy + 4 * SP);
-      ctx.closePath();
-      ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(ex + 3 * SP, cy);
-      ctx.lineTo(ex + 16 * SP, cy - 12 * SP - flap * 6 * SP);
-      ctx.lineTo(ex + 6 * SP, cy + 4 * SP);
-      ctx.closePath();
-      ctx.fill();
-      // Little horns
-      ctx.strokeStyle = t.wing;
-      ctx.lineWidth = 1.8 * SP;
-      ctx.beginPath();
-      ctx.moveTo(ex - 3 * SP, cy - 7 * SP);
-      ctx.lineTo(ex - 5 * SP, cy - 13 * SP);
-      ctx.moveTo(ex + 3 * SP, cy - 7 * SP);
-      ctx.lineTo(ex + 5 * SP, cy - 13 * SP);
-      ctx.stroke();
-    } else if (style === "wispy") {
-      ctx.globalAlpha = 0.75;
-      ctx.beginPath();
-      ctx.ellipse(ex - 9 * SP, cy - flap * 4 * SP, 7 * SP, 11 * SP, -0.3, 0, Math.PI * 2);
-      ctx.ellipse(ex + 9 * SP, cy - flap * 4 * SP, 7 * SP, 11 * SP, 0.3, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-    } else {
-      // bug / beetle — short buzzing wings
-      ctx.globalAlpha = 0.7;
-      ctx.beginPath();
-      ctx.ellipse(ex - 8 * SP, cy - 2 * SP - flap * 2 * SP, 6 * SP, 3.5 * SP, -0.2, 0, Math.PI * 2);
-      ctx.ellipse(ex + 8 * SP, cy - 2 * SP - flap * 2 * SP, 6 * SP, 3.5 * SP, 0.2, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
     }
-
-    // Body
-    ctx.fillStyle = t.body;
+    ctx.fillStyle = (t && t.body) || "#a78bfa";
     ctx.beginPath();
-    if (style === "beetle" || style === "bug") {
-      ctx.ellipse(ex, cy, 8 * SP, 10 * SP, 0, 0, Math.PI * 2);
-    } else if (style === "wispy") {
-      ctx.ellipse(ex, cy, 7 * SP, 9 * SP, 0, 0, Math.PI * 2);
-    } else {
-      ctx.arc(ex, cy, 8 * SP, 0, Math.PI * 2);
-    }
+    ctx.arc(ex, cy, 8 * SP, 0, Math.PI * 2);
     ctx.fill();
-    // Eyes
-    ctx.fillStyle = t.eye;
+    ctx.fillStyle = (t && t.eye) || "#fde047";
     ctx.beginPath();
     ctx.arc(ex - 2.5 * SP, cy - 1.5 * SP, 2 * SP, 0, Math.PI * 2);
     ctx.arc(ex + 2.5 * SP, cy - 1.5 * SP, 2 * SP, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "#1a1020";
-    ctx.beginPath();
-    ctx.arc(ex - 2.5 * SP, cy - 1.5 * SP, 0.9 * SP, 0, Math.PI * 2);
-    ctx.arc(ex + 2.5 * SP, cy - 1.5 * SP, 0.9 * SP, 0, Math.PI * 2);
-    ctx.fill();
-    // Antennae for moth/beetle
-    if (style === "moth" || style === "bug" || style === "beetle") {
-      ctx.strokeStyle = t.accent;
-      ctx.lineWidth = 1.2 * SP;
-      ctx.beginPath();
-      ctx.moveTo(ex - 2 * SP, cy - 7 * SP);
-      ctx.quadraticCurveTo(ex - 6 * SP, cy - 14 * SP, ex - 4 * SP, cy - 15 * SP);
-      ctx.moveTo(ex + 2 * SP, cy - 7 * SP);
-      ctx.quadraticCurveTo(ex + 6 * SP, cy - 14 * SP, ex + 4 * SP, cy - 15 * SP);
-      ctx.stroke();
-    }
   }
 
   function drawPlayerSprite(px, py) {
-    // Soft personal glow
-    ctx.fillStyle = "rgba(126, 200, 255, 0.25)";
+    ctx.fillStyle = "rgba(126, 200, 255, 0.22)";
     ctx.beginPath();
     ctx.arc(px, py, 16 * SP, 0, Math.PI * 2);
     ctx.fill();
+    const art = getArt("player");
+    const footY = py + 12 * SP;
+    if (drawArtBillboard(art, px, footY, PLAYER_DRAW_H, { alpha: 1 })) {
+      // Tiny clothing chips near feet for HUD parity
+      const chipY = footY - 2 * SP;
+      ctx.fillStyle = player.clothing.shirt ? "#5eead4" : "#333";
+      ctx.fillRect(px - 10 * SP, chipY, 6 * SP, 3 * SP);
+      ctx.fillStyle = player.clothing.pants ? "#5eead4" : "#333";
+      ctx.fillRect(px - 2 * SP, chipY, 6 * SP, 3 * SP);
+      ctx.fillStyle = player.clothing.shoes ? "#5eead4" : "#333";
+      ctx.fillRect(px + 6 * SP, chipY, 6 * SP, 3 * SP);
+      return;
+    }
+    // Vector fallback
     ctx.fillStyle = player.sprinting ? "#a8e0ff" : "#7ec8ff";
     ctx.beginPath();
     ctx.arc(px, py, 9 * SP, 0, Math.PI * 2);
     ctx.fill();
-    // Head hint
     ctx.fillStyle = "#9ad4ff";
     ctx.beginPath();
     ctx.arc(px, py - 10 * SP, 5.5 * SP, 0, Math.PI * 2);
     ctx.fill();
-    // Clothing indicators (larger chips)
     ctx.fillStyle = player.clothing.shirt ? "#5eead4" : "#333";
     ctx.fillRect(px - 10 * SP, py - 4 * SP, 7 * SP, 4 * SP);
     ctx.fillStyle = player.clothing.pants ? "#5eead4" : "#333";
@@ -1804,17 +1954,24 @@
       ctx.fillRect(c.x + 4 * SP, ky + 4 * SP, 3 * SP, 2 * SP);
     } else if (t === TILE.TRAP) {
       const c = worldToScreen(x + 0.5, y + 0.5);
-      const trapQ = [
-        worldToScreen(x + 0.22, y + 0.22),
-        worldToScreen(x + 0.78, y + 0.22),
-        worldToScreen(x + 0.78, y + 0.78),
-        worldToScreen(x + 0.22, y + 0.78)
-      ];
-      fillPoly(ctx, trapQ, "rgba(60,30,45,0.28)", "rgba(80,50,70,0.45)", 1);
-      ctx.fillStyle = "rgba(120,40,60,0.18)";
-      ctx.beginPath();
-      ctx.arc(c.x, c.y, 3 * PX, 0, Math.PI * 2);
-      ctx.fill();
+      let dist = 99;
+      if (player) dist = Math.hypot(player.x - (x + 0.5), player.y - (y + 0.5));
+      const prox = Math.max(0, 1 - dist / 4.5);
+      const alpha = 0.22 + prox * 0.7;
+      const art = getArt("trap");
+      if (!drawArtBillboard(art, c.x, c.y + 6 * SP, TRAP_DRAW_H, { alpha })) {
+        const trapQ = [
+          worldToScreen(x + 0.22, y + 0.22),
+          worldToScreen(x + 0.78, y + 0.22),
+          worldToScreen(x + 0.78, y + 0.78),
+          worldToScreen(x + 0.22, y + 0.78)
+        ];
+        fillPoly(ctx, trapQ, `rgba(60,30,45,${0.2 + prox * 0.25})`, `rgba(80,50,70,${0.3 + prox * 0.3})`, 1);
+        ctx.fillStyle = `rgba(120,40,60,${0.12 + prox * 0.2})`;
+        ctx.beginPath();
+        ctx.arc(c.x, c.y, 3 * PX, 0, Math.PI * 2);
+        ctx.fill();
+      }
     } else if (t === TILE.POTION) {
       const c = worldToScreen(x + 0.5, y + 0.5);
       ctx.fillStyle = "#5eead4";

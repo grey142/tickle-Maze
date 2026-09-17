@@ -70,6 +70,19 @@ Rules:
 - Succubus always present — larger unique sprite with horns, wings, and glow; ignores flashlight
 - Entrance/exit: stone arches with **portcullis** grate + flanking torches
 
+
+## Art assets
+
+In-game sprites use a shared **dark-fantasy painterly** style (succubus art is the reference):
+
+- Player: `assets/player/player-styled.png`
+- Succubi: `assets/succubus/succubus-1.jpg`, `succubus-2.jpg` (level ≥5 spawns both)
+- Minions: `assets/minions/minion-styled-1.png`, `minion-styled-2.png` (drawn at **1/4** succubus height)
+- Traps: `assets/trap/trap-styled.png` (dim until close)
+- Cinematics: `assets/scenes/feet-styled.png`, `belly-styled.png`, and `tied-01.png`
+
+Images preload at boot; if a file fails to load, the old vector stick-figure draw is used as fallback.
+
 ## Files
 
 - `index.html` — shell + UI overlays
