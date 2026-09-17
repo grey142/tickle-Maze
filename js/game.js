@@ -7,8 +7,8 @@
   const TILE = window.MazeGen.TILE;
   const CELL = 80; // 2× tiles (~20×14 tiles on 1600×1120)
   const PX = CELL / 40; // scale factor for map décor / wall detail
-  // Entity sprites ~3× larger than the old PX-authored radii (keep CELL so rooms stay screen-filling)
-  const SP = PX * 3;
+  // Entity sprites ~5× larger than the old PX-authored radii (keep CELL so rooms stay screen-filling)
+  const SP = PX * 5;
   // Large mansion — camera frames a window into the current room
   const COLS = 96;
   const ROWS = 72;
@@ -340,7 +340,7 @@
         speed: isSucc ? SUCC_WANDER : MINION_SPEED,
         wanderSpeed: isSucc ? SUCC_WANDER : MINION_SPEED,
         chaseSpeed: isSucc ? SUCC_CHASE : MINION_SPEED * 1.15,
-        awareness: isSucc ? SUCC_LOS_RANGE : 5.5,
+        awareness: isSucc ? SUCC_LOS_RANGE : 14,
         pathTimer: 0,
         path: [],
         anim: Math.random() * Math.PI * 2,
@@ -545,6 +545,85 @@
     return dot >= FLASH_COS;
   }
 
+  /** True if world point sits in the player's rear hemisphere (opposite facing). */
+  function isBehindPlayer(ex, ey) {
+    const dx = ex - player.x;
+    const dy = ey - player.y;
+    const len = Math.hypot(dx, dy) || 1;
+    const dot = player.facingDx * (dx / len) + player.facingDy * (dy / len);
+    return dot < -0.2;
+  }
+
+  /**
+   * Persistent sneak/flank goal: walkable cell behind the player, preferably
+   * outside the flashlight cone. Circles via side-rear offsets so minions
+   * approach from behind instead of charging the beam.
+   */
+  function sneakFlankTarget(e, preferClose) {
+    const backDx = -player.facingDx;
+    const backDy = -player.facingDy;
+    const sideDx = -player.facingDy;
+    const sideDy = player.facingDx;
+    const toEx = e.x - player.x;
+    const toEy = e.y - player.y;
+    const sideSign = toEx * sideDx + toEy * sideDy >= 0 ? 1 : -1;
+
+    const candidates = [];
+    const dists = preferClose ? [0.85, 1.2, 1.55, 2.0] : [1.5, 2.1, 2.7, 3.4, 4.2];
+    for (const d of dists) {
+      candidates.push({ x: player.x + backDx * d, y: player.y + backDy * d, bias: 3 });
+      candidates.push({
+        x: player.x + backDx * d * 0.72 + sideDx * sideSign * d * 0.9,
+        y: player.y + backDy * d * 0.72 + sideDy * sideSign * d * 0.9,
+        bias: 4
+      });
+      candidates.push({
+        x: player.x + backDx * d * 0.72 - sideDx * sideSign * d * 0.9,
+        y: player.y + backDy * d * 0.72 - sideDy * sideSign * d * 0.9,
+        bias: 2
+      });
+      candidates.push({
+        x: player.x + backDx * d * 0.3 + sideDx * sideSign * d * 1.15,
+        y: player.y + backDy * d * 0.3 + sideDy * sideSign * d * 1.15,
+        bias: 1.4
+      });
+    }
+    if (preferClose && isBehindPlayer(e.x, e.y)) {
+      candidates.push({ x: player.x, y: player.y, bias: 5 });
+    }
+
+    let best = null;
+    let bestScore = -Infinity;
+    for (const c of candidates) {
+      const tx = Math.floor(c.x);
+      const ty = Math.floor(c.y);
+      if (isWall(tx, ty)) continue;
+      const cx = tx + 0.5;
+      const cy = ty + 0.5;
+      const inBeam = enemyInFlashlight({ x: cx, y: cy });
+      const behind = isBehindPlayer(cx, cy);
+      const distToMe = Math.hypot(cx - e.x, cy - e.y);
+      const distToPlayer = Math.hypot(cx - player.x, cy - player.y);
+      let score = c.bias * 10;
+      if (behind) score += 8;
+      if (!inBeam) score += 6;
+      else score -= 12;
+      score -= distToMe * 0.35;
+      if (distToPlayer < 3.5) score += 2;
+      if (score > bestScore) {
+        bestScore = score;
+        best = { x: tx, y: ty };
+      }
+    }
+    if (!best) {
+      const bx = Math.floor(player.x + backDx * 2);
+      const by = Math.floor(player.y + backDy * 2);
+      if (!isWall(bx, by)) return { x: bx, y: by };
+      return { x: Math.floor(player.x), y: Math.floor(player.y) };
+    }
+    return best;
+  }
+
   function fleeTargetAwayFromPlayer(e) {
     const dx = e.x - player.x;
     const dy = e.y - player.y;
@@ -689,32 +768,25 @@
 
         e.pathTimer -= dt;
         if (sight) {
+          // Direct LOS chase (ignores flashlight); still grab on contact
           if (e.pathTimer <= 0) {
             e.path = findPath(e.x, e.y, player.x, player.y);
             e.pathTimer = 0.28;
           }
         } else {
-          // Aimless wander — quiet & slow
+          // No LOS: prefer flanking toward the player's rear (sneak approach)
           if (e.pathTimer <= 0 || !e.path || !e.path.length) {
-            e.pathTimer = 1.4 + Math.random() * 1.2;
-            // Pick a random floor a short ways away
-            const ang = Math.random() * Math.PI * 2;
-            const distW = 3 + Math.random() * 5;
-            let tx = Math.floor(e.x + Math.cos(ang) * distW);
-            let ty = Math.floor(e.y + Math.sin(ang) * distW);
-            if (isWall(tx, ty)) {
-              const dirs = [
-                [1, 0],
-                [-1, 0],
-                [0, 1],
-                [0, -1]
-              ];
-              const d = dirs[Math.floor(Math.random() * 4)];
-              tx = Math.floor(e.x) + d[0] * (1 + Math.floor(Math.random() * 3));
-              ty = Math.floor(e.y) + d[1] * (1 + Math.floor(Math.random() * 3));
+            e.pathTimer = 0.5 + Math.random() * 0.35;
+            const dest = sneakFlankTarget(e, dist < 3.2);
+            e.path = findPath(e.x, e.y, dest.x + 0.5, dest.y + 0.5);
+            if (!e.path.length) {
+              const ang = Math.random() * Math.PI * 2;
+              const distW = 2 + Math.random() * 4;
+              let tx = Math.floor(e.x + Math.cos(ang) * distW);
+              let ty = Math.floor(e.y + Math.sin(ang) * distW);
+              if (!isWall(tx, ty)) e.path = findPath(e.x, e.y, tx + 0.5, ty + 0.5);
+              else e.path = [];
             }
-            if (!isWall(tx, ty)) e.path = findPath(e.x, e.y, tx + 0.5, ty + 0.5);
-            else e.path = [];
           }
         }
 
@@ -771,22 +843,22 @@
         continue;
       }
 
-      if (dist < e.awareness && e.pathTimer <= 0) {
-        e.path = findPath(e.x, e.y, player.x, player.y);
-        e.pathTimer = 0.5;
-      } else if (dist >= e.awareness && e.pathTimer <= 0) {
-        e.pathTimer = 1.2 + Math.random();
-        const dirs = [
-          [1, 0],
-          [-1, 0],
-          [0, 1],
-          [0, -1]
-        ];
-        const d = dirs[Math.floor(Math.random() * 4)];
-        const tx = Math.floor(e.x) + d[0];
-        const ty = Math.floor(e.y) + d[1];
-        if (!isWall(tx, ty)) e.path = [{ x: tx, y: ty }];
+      // Persistently sneak: path to rear/flank (outside cone), then grab from behind
+      if (e.pathTimer <= 0) {
+        const close = dist < 2.4;
+        if (dist < 1.35 && (isBehindPlayer(e.x, e.y) || dist < 0.9)) {
+          // Close enough behind (or hugging) — dive for the grab
+          e.path = findPath(e.x, e.y, player.x, player.y);
+        } else {
+          const dest = sneakFlankTarget(e, close);
+          e.path = findPath(e.x, e.y, dest.x + 0.5, dest.y + 0.5);
+          if (!e.path.length) e.path = [dest];
+        }
+        e.pathTimer = close ? 0.26 : 0.4;
       }
+      // Slightly quicker when already behind so grabs feel snappy
+      const sneakSpeed =
+        isBehindPlayer(e.x, e.y) && dist < 3.5 ? e.wanderSpeed * 1.12 : e.wanderSpeed;
       if (e.path && e.path.length) {
         const t = e.path[0];
         const tx = t.x + 0.5,
@@ -794,7 +866,7 @@
         const dx = tx - e.x,
           dy = ty - e.y;
         const len = Math.hypot(dx, dy) || 1;
-        tryMove(e, dx / len, dy / len, dt, e.wanderSpeed);
+        tryMove(e, dx / len, dy / len, dt, sneakSpeed);
         if (Math.hypot(tx - e.x, ty - e.y) < 0.15) e.path.shift();
       }
 

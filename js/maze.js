@@ -4,8 +4,8 @@
  * Seeded RNG so restart keeps the same layout.
  *
  * Sizing (level 1..10), tuned so each room roughly fills the 1600×1120 /
- * CELL=80 camera (~20×14 tiles):
- *   room size  ~16–22 wide × ~12–16 tall (square or rectangular)
+ * CELL=80 camera (~20×14 tiles), shrunk ~1/8 (×7/8):
+ *   room size  ~14–19 wide × ~10–14 tall (square or rectangular)
  *   L1 rooms   ~8–20 chambers (ref-map scale; prioritize L1 quality)
  *   map grid   sized to the room cluster + rock border (not 165–290)
  *   dead-ends  ~10% on L1, modest rise per level
@@ -42,8 +42,8 @@ window.MazeGen = (function () {
       8,
       Math.round(12 + (t - 1) * 0.7 + (lv > 10 ? (lv - 10) * 0.4 : 0))
     );
-    const avgW = 19;
-    const avgH = 15;
+    const avgW = 17;
+    const avgH = 13;
     const colsAcross = Math.max(3, Math.round(Math.sqrt(roomCount)));
     const rowsDown = Math.max(3, Math.ceil(roomCount / colsAcross));
     const margin = 4;
@@ -76,16 +76,16 @@ window.MazeGen = (function () {
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
   }
 
-  /** BSP: screen-sized leaves (~16–22 × ~12–16) separated by 1-tile shared walls. */
+  /** BSP: screen-sized leaves (~14–19 × ~10–14) separated by 1-tile shared walls. */
   function bspPartition(root, targetLeaves, rng) {
-    const minW = 14;
-    const minH = 12;
-    const preferW = 18;
-    const preferH = 14;
-    const softMaxW = 22;
-    const softMaxH = 16;
-    const hardMaxW = 26;
-    const hardMaxH = 20;
+    const minW = 12;
+    const minH = 10;
+    const preferW = 16;
+    const preferH = 12;
+    const softMaxW = 19;
+    const softMaxH = 14;
+    const hardMaxW = 23;
+    const hardMaxH = 18;
     const leaves = [];
 
     function softOver(node) {
