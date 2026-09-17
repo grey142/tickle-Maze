@@ -25,7 +25,7 @@ You can also open `index.html` directly (File → Open) — no ES modules are re
 
 - **Move:** WASD or arrow keys (on-screen D-pad on touch devices)
 - **Sprint:** Hold **Shift** (or the mobile **SPRINT** button). Drains the stamina bar; regenerates when you stop. Sprint is faster than the succubus chase; walking is slower than her chase
-- **Camera:** Close-up **room-locked** view — you only see the room you are in. The camera soft-follows inside that space and clamps near mid-walls/doorways so neighboring rooms stay off-screen. Crossing a doorway slides the camera into the next room
+- **Camera:** Close-up **room-locked** **angled / isometric** view — you look into the room from an elevated side angle (near/south wall cut away). Soft-follow inside the room; doorways stay visible; neighboring rooms stay off-screen
 - **Flashlight:** Always on — shines in the direction you last moved. Beaming **minions** makes them flee, vanish, and respawn elsewhere. The **succubus is not afraid of light**
 - **Succubus:** Wanders slowly and quietly. Heartbeats get louder as she approaches. If she has line of sight, she speeds up by 35% to chase
 - **Traps:** Sparse / usually none on early floors. Hitting one triggers a grab cinematic
@@ -61,9 +61,10 @@ Rules:
 
 ### Aesthetic
 
-- Floors: **sand + irregular cobblestone**
-- Walls: **faux-3D weathered stone brick** (top face + vertical thickness)
-- Warm torch glow; underground abandoned-tunnel vibe
+- View: **oblique / elevated isometric** — diamond/skewed floor quads, tall N/E/W walls, **near (south) wall omitted** so you look into the room (matches `maps/ref-room.jpg` / `maps/ref-map.jpg`)
+- Floors: **sand + irregular cobblestone** on the skewed floor plane
+- Walls: **weathered stone brick** with vertical height; doorways read clearly
+- Sprites billboard upright on the floor plane; warm torch glow; underground abandoned-tunnel vibe
 - Characters & pickups drawn ~**5×** larger (entity sprite scale); rooms stay screen-filling (CELL=80)
 - Flying tickly minions have multiple silhouettes/colors/wing styles; they persistently sneak/flank from behind (outside the flashlight cone); flashlight still scares them
 - Succubus always present — larger unique sprite with horns, wings, and glow; ignores flashlight
@@ -75,7 +76,7 @@ Rules:
 - `css/style.css` — manor / magenta theme
 - `js/maze.js` — seeded underground-tunnel generator (all levels)
 - `js/scenes.js` — feet / belly / tied cinematic pools
-- `js/game.js` — gameplay, room-locked camera, sprint, keys/gate, enemies, QTE, HUD, faux-3D render
+- `js/game.js` — gameplay, room-locked isometric camera, sprint, keys/gate, enemies, QTE, HUD, oblique render
 
 ## Tech
 
