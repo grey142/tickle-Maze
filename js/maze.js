@@ -29,7 +29,8 @@ window.MazeGen = (function () {
     CLOTH_SHIRT: 5,
     CLOTH_SHOES: 6,
     CLOTH_PANTS: 7,
-    KEY: 8
+    KEY: 8,
+    CHEST: 9
   };
 
   const KEYS_REQUIRED = 3;
@@ -74,6 +75,13 @@ window.MazeGen = (function () {
 
   function inRoom(r, x, y) {
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+  }
+
+  function mazeRoomOf(rooms, x, y) {
+    for (let i = 0; i < rooms.length; i++) {
+      if (inRoom(rooms[i], x, y)) return rooms[i];
+    }
+    return null;
   }
 
   /** BSP: screen-sized leaves (~14–19 × ~10–14) separated by 1-tile shared walls. */
@@ -971,19 +979,35 @@ window.MazeGen = (function () {
       }
     }
 
+    // At least 5 traps on L1; more each level (hard to see but present)
+    const trapTarget = 5 + Math.max(0, params.level - 1) * 2;
     const traps = [];
-    if (params.level >= 5 && rng() < 0.35) {
-      const nonSE = rooms.filter(function (_, i) {
-        return i !== startIdx && i !== exitIdx;
-      });
-      if (nonSE.length) {
-        const pr = nonSE[Math.floor(rng() * nonSE.length)];
-        const t = takeInRoom(pr, start, 8);
-        if (t) {
-          grid[t.y][t.x] = TILE.TRAP;
-          traps.push(t);
+    const trapMinSpacing = 6;
+    const trapRooms = rooms.filter(function (_, i) {
+      return i !== startIdx;
+    });
+    let trapGuard = 0;
+    while (traps.length < trapTarget && trapGuard++ < trapTarget * 40) {
+      let t = null;
+      if (trapRooms.length) {
+        t = takeInRoom(trapRooms[Math.floor(rng() * trapRooms.length)], start, 5);
+      }
+      if (!t) t = takeFarFrom(start.x, start.y, 8);
+      if (!t) break;
+      let spaced = true;
+      for (let ti = 0; ti < traps.length; ti++) {
+        if (Math.abs(traps[ti].x - t.x) + Math.abs(traps[ti].y - t.y) < trapMinSpacing) {
+          spaced = false;
+          break;
         }
       }
+      if (!spaced) {
+        // put cell back into floors so we can keep trying
+        floors.push(t);
+        continue;
+      }
+      grid[t.y][t.x] = TILE.TRAP;
+      traps.push(t);
     }
 
     let potion = null;
@@ -1011,6 +1035,7 @@ window.MazeGen = (function () {
       clothPickups.push({ x: c.x, y: c.y, tile: ct });
     }
 
+    // Exactly KEYS_REQUIRED keys, strongly scattered (large min distance; never adjacent/cluster)
     const keyPickups = [];
     const keyRooms = rooms.filter(function (_, i) {
       return i !== startIdx && i !== exitIdx;
@@ -1027,55 +1052,138 @@ window.MazeGen = (function () {
         keyCandidates.push(c);
       }
     }
+    // Prefer large separation: start far from entrance; keys far from each other & exit
+    const mapSpan = Math.max(cols, rows);
+    let minKeyDist = Math.max(14, Math.floor(mapSpan * 0.28));
+    const minKeyFromStart = Math.max(12, Math.floor(mapSpan * 0.22));
+    const minKeyFromExit = 8;
     const pickedKeys = [];
-    for (let ki = 0; ki < KEYS_REQUIRED; ki++) {
-      if (!keyCandidates.length) break;
-      let best = null;
-      let bestScore = -1;
-      const sampleN = Math.min(keyCandidates.length, 400);
-      for (let s = 0; s < sampleN; s++) {
-        const c = keyCandidates[Math.floor(rng() * keyCandidates.length)];
-        let minD = Infinity;
-        if (!pickedKeys.length) {
-          minD = Math.abs(c.x - start.x) + Math.abs(c.y - start.y);
-        } else {
-          for (let p = 0; p < pickedKeys.length; p++) {
-            const d = Math.abs(c.x - pickedKeys[p].x) + Math.abs(c.y - pickedKeys[p].y);
-            if (d < minD) minD = d;
-          }
-        }
-        const dSE =
-          Math.min(
-            Math.abs(c.x - start.x) + Math.abs(c.y - start.y),
-            Math.abs(c.x - exitCell.x) + Math.abs(c.y - exitCell.y)
-          ) * 0.15;
-        const score = minD + dSE;
-        if (score > bestScore) {
-          bestScore = score;
-          best = c;
-        }
+
+    function keyOk(c, minPeer) {
+      const ds = Math.abs(c.x - start.x) + Math.abs(c.y - start.y);
+      if (ds < minKeyFromStart) return false;
+      const de = Math.abs(c.x - exitCell.x) + Math.abs(c.y - exitCell.y);
+      if (de < minKeyFromExit) return false;
+      for (let p = 0; p < pickedKeys.length; p++) {
+        const d = Math.abs(c.x - pickedKeys[p].x) + Math.abs(c.y - pickedKeys[p].y);
+        if (d < minPeer) return false;
+        // Never same/adjacent tiles
+        if (d < 2) return false;
       }
-      if (!best) break;
-      pickedKeys.push(best);
-      grid[best.y][best.x] = TILE.KEY;
-      keyPickups.push({ x: best.x, y: best.y });
+      return true;
+    }
+
+    function removeCandidate(c) {
       for (let fi = floors.length - 1; fi >= 0; fi--) {
-        if (floors[fi].x === best.x && floors[fi].y === best.y) {
+        if (floors[fi].x === c.x && floors[fi].y === c.y) {
           floors.splice(fi, 1);
           break;
         }
       }
       for (let ci = keyCandidates.length - 1; ci >= 0; ci--) {
-        if (keyCandidates[ci].x === best.x && keyCandidates[ci].y === best.y) {
+        if (keyCandidates[ci].x === c.x && keyCandidates[ci].y === c.y) {
           keyCandidates.splice(ci, 1);
         }
       }
     }
+
+    // Retry with relaxed spacing if the map cannot satisfy the strict minimum
+    for (let attempt = 0; attempt < 8 && pickedKeys.length < KEYS_REQUIRED; attempt++) {
+      const peerNeed = Math.max(2, minKeyDist - attempt * 2);
+      const sampleN = Math.min(keyCandidates.length, 600);
+      for (let ki = pickedKeys.length; ki < KEYS_REQUIRED; ki++) {
+        if (!keyCandidates.length) break;
+        let best = null;
+        let bestScore = -1;
+        for (let s = 0; s < sampleN; s++) {
+          const c = keyCandidates[Math.floor(rng() * keyCandidates.length)];
+          if (!keyOk(c, peerNeed)) continue;
+          let minD = Infinity;
+          if (!pickedKeys.length) {
+            minD = Math.abs(c.x - start.x) + Math.abs(c.y - start.y);
+          } else {
+            for (let p = 0; p < pickedKeys.length; p++) {
+              const d = Math.abs(c.x - pickedKeys[p].x) + Math.abs(c.y - pickedKeys[p].y);
+              if (d < minD) minD = d;
+            }
+          }
+          // Prefer different rooms when possible
+          let roomBonus = 0;
+          for (let p = 0; p < pickedKeys.length; p++) {
+            const sameRoom =
+              mazeRoomOf(rooms, c.x, c.y) &&
+              mazeRoomOf(rooms, pickedKeys[p].x, pickedKeys[p].y) &&
+              mazeRoomOf(rooms, c.x, c.y) === mazeRoomOf(rooms, pickedKeys[p].x, pickedKeys[p].y);
+            if (sameRoom) roomBonus -= 8;
+            else roomBonus += 2;
+          }
+          const score = minD + roomBonus;
+          if (score > bestScore) {
+            bestScore = score;
+            best = c;
+          }
+        }
+        if (!best) break;
+        pickedKeys.push(best);
+        grid[best.y][best.x] = TILE.KEY;
+        keyPickups.push({ x: best.x, y: best.y });
+        removeCandidate(best);
+      }
+    }
+    // Fallback: fill remaining with far takes (still no adjacent)
     while (keyPickups.length < KEYS_REQUIRED) {
       const k = takeFarFrom(start.x, start.y, 8);
       if (!k) break;
+      let ok = true;
+      for (let p = 0; p < keyPickups.length; p++) {
+        if (Math.abs(keyPickups[p].x - k.x) + Math.abs(keyPickups[p].y - k.y) < 2) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) {
+        floors.push(k);
+        continue;
+      }
       grid[k.y][k.x] = TILE.KEY;
       keyPickups.push(k);
+    }
+
+    // Scarce treasure chests (2–4 on L1, mild scale) — potion and/or clothing
+    const chestCount = Math.min(6, 2 + Math.floor(rng() * 3) + Math.floor((params.level - 1) * 0.5));
+    const chests = [];
+    const chestMinDist = 10;
+    const lootPool = ["potion", "cloth", "cloth", "potion"];
+    let chestGuard = 0;
+    while (chests.length < chestCount && chestGuard++ < chestCount * 50) {
+      let c = null;
+      const nonStart = rooms.filter(function (_, i) {
+        return i !== startIdx;
+      });
+      if (nonStart.length) c = takeInRoom(nonStart[Math.floor(rng() * nonStart.length)], start, 6);
+      if (!c) c = takeFarFrom(start.x, start.y, 10);
+      if (!c) break;
+      let spaced = true;
+      for (let ci = 0; ci < chests.length; ci++) {
+        if (Math.abs(chests[ci].x - c.x) + Math.abs(chests[ci].y - c.y) < chestMinDist) {
+          spaced = false;
+          break;
+        }
+      }
+      // Also keep clear of keys
+      for (let ki = 0; ki < keyPickups.length; ki++) {
+        if (Math.abs(keyPickups[ki].x - c.x) + Math.abs(keyPickups[ki].y - c.y) < 3) {
+          spaced = false;
+          break;
+        }
+      }
+      if (!spaced) {
+        floors.push(c);
+        continue;
+      }
+      const loot = lootPool[Math.floor(rng() * lootPool.length)];
+      grid[c.y][c.x] = TILE.CHEST;
+      chests.push({ x: c.x, y: c.y, loot: loot });
     }
 
     const enemySpawns = [];
@@ -1235,6 +1343,7 @@ window.MazeGen = (function () {
       traps: traps,
       potion: potion,
       clothPickups: clothPickups,
+      chests: chests,
       keyPickups: keyPickups,
       keysRequired: KEYS_REQUIRED,
       keysPlaced: keyPickups.length,

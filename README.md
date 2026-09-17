@@ -25,10 +25,11 @@ You can also open `index.html` directly (File → Open) — no ES modules are re
 
 - **Move:** WASD or arrow keys (on-screen D-pad on touch devices)
 - **Sprint:** Hold **Shift** (or the mobile **SPRINT** button). Drains the stamina bar; regenerates when you stop. Sprint is faster than the succubus chase; walking is slower than her chase
-- **Camera:** Close-up **room-locked** **angled / isometric** view — you look into the room from an elevated side angle (near/south wall cut away). Soft-follow inside the room; doorways stay visible; neighboring rooms stay off-screen
+- **Camera:** Close-up **room-locked** **angled / isometric** view — you look into the room from an elevated side angle (near/south wall cut away). **Fits/centers the whole room** when it fits the viewport; otherwise **follow-camera** with mid-wall clamp (neighboring rooms stay off-screen)
 - **Flashlight:** Always on — shines in the direction you last moved. Beaming **minions** makes them flee, vanish, and respawn elsewhere. The **succubus is not afraid of light**
 - **Succubus:** Wanders slowly and quietly. Heartbeats get louder as she approaches. If she has line of sight, she speeds up by 35% to chase
-- **Traps:** Sparse / usually none on early floors. Hitting one triggers a grab cinematic
+- **Traps:** At least **5** on level 1, more each floor (hard to see until close). Hitting one triggers a grab cinematic
+- **Treasure chests:** Scarce scattered chests grant a **potion** or **clothing** restore (LIFO). If you are fully clothed, clothing loot becomes a potion instead
 - **Resist:** Mash Space / tap the big button during catch cinematics
 - **Pause:** Esc or P
 - **Keys & locked gate:** Each level places **exactly 3 golden keys**, well spaced. You need **3 keys** (HUD: `Keys 2/3`) to unlock the exit. Reach the open gate at the **bottom** of the map to clear the level
@@ -65,8 +66,8 @@ Rules:
 - Floors: **sand + irregular cobblestone** on the skewed floor plane
 - Walls: **weathered stone brick** with vertical height; doorways read clearly
 - Sprites billboard upright on the floor plane; warm torch glow; underground abandoned-tunnel vibe
-- Characters & pickups drawn ~**5×** larger (entity sprite scale); rooms stay screen-filling (CELL=80)
-- Flying tickly minions have multiple silhouettes/colors/wing styles; they persistently sneak/flank from behind (outside the flashlight cone); flashlight still scares them
+- Characters & pickups drawn larger (entity sprite scale `SP ≈ PX*2`); rooms stay screen-filling (CELL=80)
+- Flying tickly minions have multiple silhouettes/colors/wing styles; they persistently sneak/flank then **actively grab from behind** (outside the flashlight cone); flashlight still scares them
 - Succubus always present — larger unique sprite with horns, wings, and glow; ignores flashlight
 - Entrance/exit: stone arches with **portcullis** grate + flanking torches
 
@@ -79,6 +80,7 @@ In-game sprites use a shared **dark-fantasy painterly** style (succubus art is t
 - Succubi: `assets/succubus/succubus-1.jpg`, `succubus-2.jpg` (level ≥5 spawns both)
 - Minions: `assets/minions/minion-styled-1.png`, `minion-styled-2.png` (drawn at **1/4** succubus height)
 - Traps: `assets/trap/trap-styled.png` (dim until close)
+- Chests: simple drawn wood/gold chest sprites (scarce map loot)
 - Cinematics: `assets/scenes/feet-styled.png`, `belly-styled.png`, and `tied-01.png`
 
 Images preload at boot; if a file fails to load, the old vector stick-figure draw is used as fallback.

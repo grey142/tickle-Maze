@@ -7,8 +7,8 @@
   const TILE = window.MazeGen.TILE;
   const CELL = 80; // 2× tiles (~20×14 tiles on 1600×1120)
   const PX = CELL / 40; // scale factor for map décor / wall detail
-  // Entity sprites ~5× larger than the old PX-authored radii (keep CELL so rooms stay screen-filling)
-  const SP = PX * (5 / 3); // was 5×; user: 3× smaller
+  // Entity sprites ~modestly larger than prior 5/3 (readable, not huge)
+  const SP = PX * 2; // ~20% larger than PX*(5/3)
   // Large mansion — camera frames a window into the current room
   const COLS = 96;
   const ROWS = 72;
@@ -242,7 +242,8 @@
     y: 0,
     initialized: false,
     regionId: null,
-    transitioning: false
+    transitioning: false,
+    fitRoom: false
   };
   let clothingLossStack = []; // LIFO order of lost pieces (shirt/shoes/pants)
   let animTime = 0;
@@ -582,6 +583,7 @@
     camera.initialized = false;
     camera.regionId = null;
     camera.transitioning = false;
+    camera.fitRoom = false;
     heartbeat.next = 0.5;
     updateHUD();
   }
@@ -951,37 +953,49 @@
 
       const dist = Math.hypot(player.x - e.x, player.y - e.y);
 
-      // --- Succubus: ignore flashlight; LOS chase ---
+      // --- Succubus: ignore flashlight; LOS chase; flank+grab from behind ---
       if (e.kind === "succubus") {
         const sight = hasLineOfSight(e.x, e.y, player.x, player.y, SUCC_LOS_RANGE);
+        const behind = isBehindPlayer(e.x, e.y);
         e.hasSight = sight;
         e.chasing = sight;
-        e.speed = sight ? e.chaseSpeed : e.wanderSpeed;
+        // More aggressive when already behind (rear grab commit)
+        e.speed = sight
+          ? e.chaseSpeed * (behind ? 1.08 : 1)
+          : behind && dist < 4
+            ? e.wanderSpeed * 1.35
+            : e.wanderSpeed;
 
         e.pathTimer -= dt;
         if (sight) {
-          // Direct LOS chase (ignores flashlight); still grab on contact
-          if (e.pathTimer <= 0) {
+          // Direct LOS chase; finish grabs from behind during chase
+          if (e.pathTimer <= 0 || (behind && dist < 2.2 && (!e.path || !e.path.length))) {
             e.path = findPath(e.x, e.y, player.x, player.y);
-            e.pathTimer = 0.28;
+            e.pathTimer = behind && dist < 2.5 ? 0.16 : 0.28;
           }
         } else {
-          // No LOS: prefer flanking toward the player's rear (sneak approach)
+          // No LOS: flank to rear, then commit to grab when close from behind
+          const commitGrab = behind && dist < 3.2;
           if (e.pathTimer <= 0 || !e.path || !e.path.length) {
-            e.pathTimer = 0.5 + Math.random() * 0.35;
-            const dest = sneakFlankTarget(e, dist < 3.2);
-            e.path = findPath(e.x, e.y, dest.x + 0.5, dest.y + 0.5);
-            if (!e.path.length) {
-              const ang = Math.random() * Math.PI * 2;
-              const distW = 2 + Math.random() * 4;
-              let tx = Math.floor(e.x + Math.cos(ang) * distW);
-              let ty = Math.floor(e.y + Math.sin(ang) * distW);
-              if (!isWall(tx, ty)) e.path = findPath(e.x, e.y, tx + 0.5, ty + 0.5);
-              else e.path = [];
+            e.pathTimer = commitGrab ? 0.18 : 0.45 + Math.random() * 0.3;
+            if (commitGrab || (behind && dist < 2.0)) {
+              e.path = findPath(e.x, e.y, player.x, player.y);
+            } else {
+              const dest = sneakFlankTarget(e, dist < 3.2);
+              e.path = findPath(e.x, e.y, dest.x + 0.5, dest.y + 0.5);
+              if (!e.path.length) {
+                const ang = Math.random() * Math.PI * 2;
+                const distW = 2 + Math.random() * 4;
+                let tx = Math.floor(e.x + Math.cos(ang) * distW);
+                let ty = Math.floor(e.y + Math.sin(ang) * distW);
+                if (!isWall(tx, ty)) e.path = findPath(e.x, e.y, tx + 0.5, ty + 0.5);
+                else e.path = [];
+              }
             }
           }
         }
 
+        const moveSpeed = e.speed;
         if (e.path && e.path.length) {
           const t = e.path[0];
           const tx = t.x + 0.5,
@@ -989,11 +1003,12 @@
           const dx = tx - e.x,
             dy = ty - e.y;
           const len = Math.hypot(dx, dy) || 1;
-          tryMove(e, dx / len, dy / len, dt, e.speed);
+          tryMove(e, dx / len, dy / len, dt, moveSpeed);
           if (Math.hypot(tx - e.x, ty - e.y) < 0.15) e.path.shift();
         }
 
-        if (now >= invulnUntil && dist < 0.55) {
+        const grabRange = behind ? 0.72 : 0.55;
+        if (now >= invulnUntil && dist < grabRange) {
           triggerCatch("succubus");
           return;
         }
@@ -1035,22 +1050,26 @@
         continue;
       }
 
-      // Persistently sneak: path to rear/flank (outside cone), then grab from behind
-      if (e.pathTimer <= 0) {
-        const close = dist < 2.4;
-        if (dist < 1.35 && (isBehindPlayer(e.x, e.y) || dist < 0.9)) {
-          // Close enough behind (or hugging) — dive for the grab
+      // Persistently sneak to rear/flank (outside cone), then ACTIVELY grab from behind
+      const behind = isBehindPlayer(e.x, e.y);
+      const outsideBeam = !enemyInFlashlight(e);
+      // Once in rear/flank outside flashlight — commit to grab/attack approach (no idle behind)
+      const rearCommit = behind && outsideBeam && dist < 4.2;
+      if (e.pathTimer <= 0 || (rearCommit && (!e.path || !e.path.length))) {
+        if (rearCommit || (dist < 1.6 && (behind || dist < 0.95))) {
           e.path = findPath(e.x, e.y, player.x, player.y);
+          e.pathTimer = dist < 1.8 ? 0.14 : 0.22;
         } else {
-          const dest = sneakFlankTarget(e, close);
+          const dest = sneakFlankTarget(e, dist < 2.8);
           e.path = findPath(e.x, e.y, dest.x + 0.5, dest.y + 0.5);
           if (!e.path.length) e.path = [dest];
+          e.pathTimer = dist < 2.4 ? 0.24 : 0.38;
         }
-        e.pathTimer = close ? 0.26 : 0.4;
       }
-      // Slightly quicker when already behind so grabs feel snappy
-      const sneakSpeed =
-        isBehindPlayer(e.x, e.y) && dist < 3.5 ? e.wanderSpeed * 1.12 : e.wanderSpeed;
+      // Higher aggression once behind
+      let sneakSpeed = e.wanderSpeed;
+      if (behind && dist < 4) sneakSpeed = e.wanderSpeed * (outsideBeam ? 1.38 : 1.18);
+      else if (behind) sneakSpeed = e.wanderSpeed * 1.15;
       if (e.path && e.path.length) {
         const t = e.path[0];
         const tx = t.x + 0.5,
@@ -1062,7 +1081,8 @@
         if (Math.hypot(tx - e.x, ty - e.y) < 0.15) e.path.shift();
       }
 
-      if (now >= invulnUntil && dist < 0.55) {
+      const grabRange = behind && outsideBeam ? 0.7 : 0.55;
+      if (now >= invulnUntil && dist < grabRange) {
         if (enemyInFlashlight(e)) {
           e.scared = true;
           e.fleeing = true;
@@ -1082,6 +1102,61 @@
       if (e.kind === "succubus" && e.hasSight && e.chasing) return true;
     }
     return false;
+  }
+
+
+  function findChestLoot(tx, ty) {
+    if (maze.chests) {
+      for (let i = 0; i < maze.chests.length; i++) {
+        const c = maze.chests[i];
+        if (c.x === tx && c.y === ty) return c.loot || "potion";
+      }
+    }
+    return Math.random() < 0.5 ? "potion" : "cloth";
+  }
+
+  /**
+   * Open a scarce treasure chest: grants potion or clothing (LIFO restore).
+   * If fully clothed and loot is clothing, grant potion instead (or leave if somehow empty).
+   */
+  function openTreasureChest(tx, ty) {
+    let loot = findChestLoot(tx, ty);
+    if (loot === "cloth" && isFullyClothed()) {
+      loot = "potion";
+    }
+    if (loot === "cloth") {
+      const names = { shirt: "Shirt", shoes: "Shoes", pants: "Pants" };
+      const restored = restoreLastLostPiece();
+      if (!restored) {
+        // Still fully clothed somehow — leave chest contents as potion try
+        loot = "potion";
+      } else {
+        maze.grid[ty][tx] = TILE.FLOOR;
+        if (maze.chests) {
+          maze.chests = maze.chests.filter((c) => !(c.x === tx && c.y === ty));
+        }
+        toast("Chest! Recovered your " + names[restored] + "! (−15% ticklishness)", 2400);
+        beep(520, 0.12, "triangle");
+        updateHUD();
+        spawnPickupFX(tx, ty, "#f59e0b");
+        return;
+      }
+    }
+    if (loot === "potion") {
+      maze.grid[ty][tx] = TILE.FLOOR;
+      if (maze.chests) {
+        maze.chests = maze.chests.filter((c) => !(c.x === tx && c.y === ty));
+      }
+      player.sensitivity = Math.max(0, player.sensitivity - 40);
+      if (player.sensitivity < 5) player.sensitivity = 0;
+      updateHUD();
+      toast("Chest! A sensitivity potion fizzes inside… (−40%)", 2600);
+      beep(660, 0.15, "triangle");
+      spawnPickupFX(tx, ty, "#f59e0b");
+      return;
+    }
+    // Fallback: remove empty chest
+    maze.grid[ty][tx] = TILE.FLOOR;
   }
 
   // --- Pickups / traps ---
@@ -1142,6 +1217,10 @@
       } else {
         triggerCatch("trap");
       }
+      return;
+    }
+    if (t === TILE.CHEST) {
+      openTreasureChest(tx, ty);
       return;
     }
     if (t === TILE.POTION) {
@@ -1604,14 +1683,32 @@
     const reg = getRegionAtWorld(player.x, player.y);
     const rid = regionIdOf(reg);
 
+    // Room padded bounds (mid-wall pad) — fit = whole room visible
+    let roomFits = false;
+    if (reg) {
+      const left = reg.x - CAM_ROOM_PAD;
+      const top = reg.y - CAM_ROOM_PAD - 0.35;
+      const right = reg.x + reg.w + CAM_ROOM_PAD;
+      const bottom = reg.y + reg.h + CAM_ROOM_PAD * 0.35;
+      const rw = right - left;
+      const rh = bottom - top;
+      roomFits = viewW >= rw && viewH >= rh;
+    }
+
     if (!camera.initialized) {
       let cx = player.x - viewW / 2;
       let cy = player.y - viewH / 2;
+      if (roomFits && reg) {
+        // Center on the room so the whole chamber is visible
+        cx = reg.x + reg.w / 2 - viewW / 2;
+        cy = reg.y + reg.h / 2 - viewH / 2 + reg.h * 0.04;
+      }
       const clamped = clampCameraToRegion(cx, cy, viewW, viewH, reg);
       camera.x = clamped.x;
       camera.y = clamped.y;
       camera.regionId = rid;
       camera.transitioning = false;
+      camera.fitRoom = roomFits;
       camera.initialized = true;
       return;
     }
@@ -1620,32 +1717,38 @@
       camera.regionId = rid;
       camera.transitioning = true;
     }
+    camera.fitRoom = roomFits;
 
-    const halfW = viewW / 2;
-    const halfH = viewH / 2;
-    const deadW = halfW * CAM_EDGE_FOLLOW;
-    const deadH = halfH * CAM_EDGE_FOLLOW;
-
-    const screenX = player.x - camera.x;
-    const screenY = player.y - camera.y;
     let targetX = camera.x;
     let targetY = camera.y;
 
-    if (screenX > halfW + deadW) targetX = player.x - (halfW + deadW);
-    else if (screenX < halfW - deadW) targetX = player.x - (halfW - deadW);
-
-    if (screenY > halfH + deadH) targetY = player.y - (halfH + deadH);
-    else if (screenY < halfH - deadH) targetY = player.y - (halfH - deadH);
-
-    if (reg) {
-      const rw = reg.w + CAM_ROOM_PAD * 2;
-      const rh = reg.h + CAM_ROOM_PAD * 2;
-      if (viewW >= rw) {
-        targetX = reg.x + reg.w / 2 - viewW / 2 + (player.x - (reg.x + reg.w / 2)) * 0.15;
-      }
-      if (viewH >= rh) {
-        targetY =
-          reg.y + reg.h / 2 - viewH / 2 + (player.y - (reg.y + reg.h / 2)) * 0.12 + rh * 0.04;
+    if (roomFits && reg) {
+      // Prefer: fit-to-room — center on current room (tiny player bias for feel)
+      targetX = reg.x + reg.w / 2 - viewW / 2 + (player.x - (reg.x + reg.w / 2)) * 0.06;
+      targetY =
+        reg.y + reg.h / 2 - viewH / 2 + (player.y - (reg.y + reg.h / 2)) * 0.05 + reg.h * 0.04;
+    } else {
+      // Room too big: follow camera tracking the player, still room-locked (mid-wall clamp)
+      const halfW = viewW / 2;
+      const halfH = viewH / 2;
+      const deadW = halfW * CAM_EDGE_FOLLOW;
+      const deadH = halfH * CAM_EDGE_FOLLOW;
+      const screenX = player.x - camera.x;
+      const screenY = player.y - camera.y;
+      if (screenX > halfW + deadW) targetX = player.x - (halfW + deadW);
+      else if (screenX < halfW - deadW) targetX = player.x - (halfW - deadW);
+      if (screenY > halfH + deadH) targetY = player.y - (halfH + deadH);
+      else if (screenY < halfH - deadH) targetY = player.y - (halfH - deadH);
+      // If only one axis fits, center that axis on the room
+      if (reg) {
+        const rw = reg.w + CAM_ROOM_PAD * 2;
+        const rh = reg.h + CAM_ROOM_PAD * 2;
+        if (viewW >= rw) {
+          targetX = reg.x + reg.w / 2 - viewW / 2;
+        }
+        if (viewH >= rh) {
+          targetY = reg.y + reg.h / 2 - viewH / 2 + reg.h * 0.04;
+        }
       }
     }
 
@@ -1972,6 +2075,29 @@
         ctx.arc(c.x, c.y, 3 * PX, 0, Math.PI * 2);
         ctx.fill();
       }
+    } else if (t === TILE.CHEST) {
+      const c = worldToScreen(x + 0.5, y + 0.5);
+      const bounce = Math.sin(animTime * 2.2 + x * 0.7 + y) * 1.2 * SP;
+      const cx = c.x;
+      const cy = c.y + bounce;
+      // Simple styled chest (wood + gold trim)
+      ctx.fillStyle = "#5c3a1e";
+      ctx.fillRect(cx - 12 * SP, cy - 10 * SP, 24 * SP, 16 * SP);
+      ctx.fillStyle = "#7a4a28";
+      ctx.fillRect(cx - 12 * SP, cy - 14 * SP, 24 * SP, 6 * SP);
+      ctx.strokeStyle = "#fbbf24";
+      ctx.lineWidth = Math.max(1, 1.5 * SP);
+      ctx.strokeRect(cx - 12 * SP, cy - 14 * SP, 24 * SP, 20 * SP);
+      ctx.beginPath();
+      ctx.moveTo(cx - 12 * SP, cy - 8 * SP);
+      ctx.lineTo(cx + 12 * SP, cy - 8 * SP);
+      ctx.stroke();
+      ctx.fillStyle = "#fde68a";
+      ctx.beginPath();
+      ctx.arc(cx, cy - 6 * SP, 2.4 * SP, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#92400e";
+      ctx.fillRect(cx - 10 * SP, cy + 2 * SP, 20 * SP, 3 * SP);
     } else if (t === TILE.POTION) {
       const c = worldToScreen(x + 0.5, y + 0.5);
       ctx.fillStyle = "#5eead4";
