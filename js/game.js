@@ -5,7 +5,7 @@
   "use strict";
 
   const TILE = window.MazeGen.TILE;
-  const CELL = 80; // 2× tiles (~20×14 tiles on 1600×1120)
+  const CELL = 112; // closer camera (~14×10 tiles on 1600×1120)
   const PX = CELL / 40; // scale factor for map décor / wall detail
   // Entity sprites ~modestly larger than prior 5/3 (readable, not huge)
   const SP = PX * 2; // ~20% larger than PX*(5/3)
@@ -42,9 +42,11 @@
   // Light faux-3D wall thickness (still reads overhead, not angled)
   const WALL_H = Math.floor(CELL * 0.28);
 
-  // Succubus sight
-  const SUCC_LOS_RANGE = 11;
-  const SUCC_HEAR_RANGE = 14;
+  // Creature sight — LOS only (rare / anticipatory; no omniscient tracking)
+  const SUCC_LOS_RANGE = 7.2;
+  const MINION_LOS_RANGE = 6.0;
+  const SIGHT_MEMORY = 1.55; // seconds after losing LOS before drop chase
+  const SUCC_HEAR_RANGE = 7.5; // heartbeat only when nearby / recently seen
 
   // Flying tickly minion visual varieties (behavior identical)
   // art keys prefer dark-fantasy styled PNGs matching succubus look
@@ -382,13 +384,16 @@
     const near = nearestSuccubus() || succubusRef;
     if (!near) return;
     const dist = Math.hypot(player.x - near.x, player.y - near.y);
-    if (dist > SUCC_HEAR_RANGE) {
+    const recentlySeen =
+      !!near.hasSight || (near.memoryTimer != null && near.memoryTimer > 0);
+    // Not omniscient: only when actually nearby OR she recently saw you
+    if (dist > SUCC_HEAR_RANGE || (!recentlySeen && dist > 4.2)) {
       heartbeat.next = Math.max(heartbeat.next, 0.4);
       return;
     }
-    // Closer → louder & faster
+    // Closer → louder & faster (boost a bit if she has eyes on you)
     const t = 1 - dist / SUCC_HEAR_RANGE;
-    const intensity = Math.pow(t, 1.35);
+    const intensity = Math.pow(t, 1.35) * (recentlySeen ? 1 : 0.55);
     const interval = 1.15 - intensity * 0.7; // 1.15s → ~0.45s
     heartbeat.next -= dt;
     if (heartbeat.next <= 0) {
@@ -517,6 +522,10 @@
         despawnAt: 0,
         hasSight: false,
         chasing: false,
+        memoryTimer: 0,
+        lastKnownX: 0,
+        lastKnownY: 0,
+        investigating: false,
         wanderTarget: null,
         flankSide: variant === 1 ? -1 : 1
       };
@@ -543,7 +552,7 @@
         speed: MINION_SPEED,
         wanderSpeed: MINION_SPEED,
         chaseSpeed: MINION_SPEED * 1.15,
-        awareness: 14,
+        awareness: MINION_LOS_RANGE,
         pathTimer: 0,
         path: [],
         anim: Math.random() * Math.PI * 2,
@@ -553,6 +562,10 @@
         despawnAt: 0,
         hasSight: false,
         chasing: false,
+        memoryTimer: 0,
+        lastKnownX: 0,
+        lastKnownY: 0,
+        investigating: false,
         wanderTarget: null,
         flankSide: 0
       };
@@ -878,8 +891,12 @@
     e.despawnAt = 0;
     e.hasSight = false;
     e.chasing = false;
+    e.memoryTimer = 0;
+    e.investigating = false;
+    e.lastKnownX = 0;
+    e.lastKnownY = 0;
     e.path = [];
-    e.pathTimer = 0.4 + Math.random() * 0.4;
+    e.pathTimer = 0.6 + Math.random() * 0.8;
     e.speed = e.wanderSpeed;
     e.wanderTarget = null;
   }
@@ -934,6 +951,98 @@
     succubusRef = enemies.find((e) => e.kind === "succubus") || null;
   }
 
+  /**
+   * Aimless patrol: random walkable point in the creature's current room
+   * (or a nearby room floor). Does NOT use the player's position.
+   */
+  function pickAimlessWanderTarget(e) {
+    const reg = getRegionAtWorld(e.x, e.y);
+    const candidates = [];
+    if (reg && reg.kind === "room") {
+      const pad = 1;
+      for (let y = reg.y + pad; y < reg.y + reg.h - pad; y++) {
+        for (let x = reg.x + pad; x < reg.x + reg.w - pad; x++) {
+          if (isWall(x, y)) continue;
+          const d = Math.hypot(x + 0.5 - e.x, y + 0.5 - e.y);
+          if (d < 2.2) continue;
+          candidates.push({ x: x, y: y });
+        }
+      }
+    }
+    if (candidates.length < 4 && maze.floors && maze.floors.length) {
+      // Occasionally wander into an adjacent-ish floor tile (still aimless)
+      for (let n = 0; n < 28; n++) {
+        const f = maze.floors[(Math.random() * maze.floors.length) | 0];
+        const d = Math.hypot(f.x + 0.5 - e.x, f.y + 0.5 - e.y);
+        if (d < 3 || d > 14) continue;
+        if (isWall(f.x, f.y)) continue;
+        candidates.push({ x: f.x, y: f.y });
+        if (candidates.length > 40) break;
+      }
+    }
+    if (!candidates.length) {
+      const ang = Math.random() * Math.PI * 2;
+      const distW = 2.5 + Math.random() * 4;
+      let tx = Math.floor(e.x + Math.cos(ang) * distW);
+      let ty = Math.floor(e.y + Math.sin(ang) * distW);
+      if (!isWall(tx, ty)) return { x: tx, y: ty };
+      return { x: Math.floor(e.x), y: Math.floor(e.y) };
+    }
+    return candidates[(Math.random() * candidates.length) | 0];
+  }
+
+  /** Refresh LOS + short memory fade. Returns true while aggro is allowed. */
+  function tickSightMemory(e, losRange, dt) {
+    const sight = hasLineOfSight(e.x, e.y, player.x, player.y, losRange);
+    if (sight) {
+      e.hasSight = true;
+      e.chasing = true;
+      e.memoryTimer = SIGHT_MEMORY;
+      e.lastKnownX = player.x;
+      e.lastKnownY = player.y;
+      e.investigating = false;
+      return true;
+    }
+    e.hasSight = false;
+    if (e.memoryTimer > 0) {
+      e.memoryTimer -= dt;
+      e.investigating = true;
+      e.chasing = true;
+      if (e.memoryTimer <= 0) {
+        e.chasing = false;
+        e.investigating = false;
+        e.path = [];
+        e.pathTimer = 0.8 + Math.random() * 1.2;
+        e.wanderTarget = null;
+        e.speed = e.wanderSpeed;
+      }
+      return e.memoryTimer > 0;
+    }
+    e.chasing = false;
+    e.investigating = false;
+    return false;
+  }
+
+  function stepAlongPath(e, dt, moveSpeed) {
+    if (!(e.path && e.path.length)) return;
+    const t = e.path[0];
+    const tx = t.x + 0.5,
+      ty = t.y + 0.5;
+    const dx = tx - e.x,
+      dy = ty - e.y;
+    const len = Math.hypot(dx, dy) || 1;
+    tryMove(e, dx / len, dy / len, dt, moveSpeed);
+    if (Math.hypot(tx - e.x, ty - e.y) < 0.15) e.path.shift();
+  }
+
+  function setAimlessWanderPath(e) {
+    e.pathTimer = 1.4 + Math.random() * 2.2;
+    const dest = pickAimlessWanderTarget(e);
+    e.wanderTarget = dest;
+    e.path = findPath(e.x, e.y, dest.x + 0.5, dest.y + 0.5);
+    if (!e.path.length) e.path = [dest];
+  }
+
   function updateEnemies(dt) {
     const now = performance.now();
     for (const e of enemies) {
@@ -947,64 +1056,45 @@
 
       const dist = Math.hypot(player.x - e.x, player.y - e.y);
 
-      // --- Succubus: ignore flashlight; LOS chase; flank+grab from behind ---
+      // --- Succubus: LOS-only aggro; aimless wander without sight ---
       if (e.kind === "succubus") {
-        const sight = hasLineOfSight(e.x, e.y, player.x, player.y, SUCC_LOS_RANGE);
+        const aggro = tickSightMemory(e, SUCC_LOS_RANGE, dt);
         const behind = isBehindPlayer(e.x, e.y);
-        e.hasSight = sight;
-        e.chasing = sight;
-        // More aggressive when already behind (rear grab commit)
-        e.speed = sight
-          ? e.chaseSpeed * (behind ? 1.08 : 1)
-          : behind && dist < 4
-            ? e.wanderSpeed * 1.35
-            : e.wanderSpeed;
-
         e.pathTimer -= dt;
-        if (sight) {
-          // Direct LOS chase; finish grabs from behind during chase
-          if (e.pathTimer <= 0 || (behind && dist < 2.2 && (!e.path || !e.path.length))) {
-            e.path = findPath(e.x, e.y, player.x, player.y);
-            e.pathTimer = behind && dist < 2.5 ? 0.16 : 0.28;
-          }
-        } else {
-          // No LOS: flank to rear, then commit to grab when close from behind
-          const commitGrab = behind && dist < 3.2;
-          if (e.pathTimer <= 0 || !e.path || !e.path.length) {
-            e.pathTimer = commitGrab ? 0.18 : 0.45 + Math.random() * 0.3;
-            if (commitGrab || (behind && dist < 2.0)) {
+
+        if (aggro) {
+          // Knows where you are (clear LOS or brief memory) → chase / close in
+          e.speed = e.hasSight
+            ? e.chaseSpeed * (behind ? 1.08 : 1)
+            : e.wanderSpeed * 1.12; // investigate last known a bit slower
+          if (e.pathTimer <= 0 || (e.hasSight && behind && dist < 2.2 && (!e.path || !e.path.length))) {
+            if (e.hasSight) {
+              // Once spotted: path to player; rear grab when closed in behind
               e.path = findPath(e.x, e.y, player.x, player.y);
+              e.pathTimer = behind && dist < 2.5 ? 0.18 : 0.32;
             } else {
-              const dest = sneakFlankTarget(e, dist < 3.2);
-              e.path = findPath(e.x, e.y, dest.x + 0.5, dest.y + 0.5);
-              if (!e.path.length) {
-                const ang = Math.random() * Math.PI * 2;
-                const distW = 2 + Math.random() * 4;
-                let tx = Math.floor(e.x + Math.cos(ang) * distW);
-                let ty = Math.floor(e.y + Math.sin(ang) * distW);
-                if (!isWall(tx, ty)) e.path = findPath(e.x, e.y, tx + 0.5, ty + 0.5);
-                else e.path = [];
-              }
+              // Brief investigate at last-seen tile, then memory fades to wander
+              e.path = findPath(e.x, e.y, e.lastKnownX, e.lastKnownY);
+              e.pathTimer = 0.4 + Math.random() * 0.25;
             }
           }
+        } else {
+          // No LOS / memory: slowly patrol random room points (no player tracking)
+          e.speed = e.wanderSpeed * 0.92;
+          if (e.pathTimer <= 0 || !e.path || !e.path.length) {
+            setAimlessWanderPath(e);
+          }
         }
 
-        const moveSpeed = e.speed;
-        if (e.path && e.path.length) {
-          const t = e.path[0];
-          const tx = t.x + 0.5,
-            ty = t.y + 0.5;
-          const dx = tx - e.x,
-            dy = ty - e.y;
-          const len = Math.hypot(dx, dy) || 1;
-          tryMove(e, dx / len, dy / len, dt, moveSpeed);
-          if (Math.hypot(tx - e.x, ty - e.y) < 0.15) e.path.shift();
-        }
+        stepAlongPath(e, dt, e.speed);
 
-        const grabRange = behind ? 0.72 : 0.55;
-        if (now >= invulnUntil && dist < grabRange) {
-          triggerCatch("succubus");
-          return;
+        // Behind-grab only after she has spotted / is still chasing you
+        if (aggro && now >= invulnUntil) {
+          const grabRange = behind ? 0.72 : 0.55;
+          if (dist < grabRange) {
+            triggerCatch("succubus");
+            return;
+          }
         }
         continue;
       }
@@ -1016,6 +1106,11 @@
         e.fleeing = true;
         e.fleeUntil = now + 900;
         e.despawnAt = now + 1100;
+        // Drop any chase knowledge when scared off
+        e.hasSight = false;
+        e.chasing = false;
+        e.memoryTimer = 0;
+        e.investigating = false;
         spawnScareText(e);
       }
 
@@ -1030,63 +1125,55 @@
           }
           e.pathTimer = 0.22;
         }
-        const fleeSpeed = e.wanderSpeed * 1.55;
-        if (e.path && e.path.length) {
-          const t = e.path[0];
-          const tx = t.x + 0.5,
-            ty = t.y + 0.5;
-          const dx = tx - e.x,
-            dy = ty - e.y;
-          const len = Math.hypot(dx, dy) || 1;
-          tryMove(e, dx / len, dy / len, dt, fleeSpeed);
-          if (Math.hypot(tx - e.x, ty - e.y) < 0.15) e.path.shift();
-        }
+        stepAlongPath(e, dt, e.wanderSpeed * 1.55);
         continue;
       }
 
-      // Persistently sneak to rear/flank (outside cone), then ACTIVELY grab from behind
+      const aggro = tickSightMemory(e, e.awareness || MINION_LOS_RANGE, dt);
       const behind = isBehindPlayer(e.x, e.y);
       const outsideBeam = !enemyInFlashlight(e);
-      // Once in rear/flank outside flashlight — commit to grab/attack approach (no idle behind)
-      const rearCommit = behind && outsideBeam && dist < 4.2;
-      if (e.pathTimer <= 0 || (rearCommit && (!e.path || !e.path.length))) {
-        if (rearCommit || (dist < 1.6 && (behind || dist < 0.95))) {
-          e.path = findPath(e.x, e.y, player.x, player.y);
-          e.pathTimer = dist < 1.8 ? 0.14 : 0.22;
-        } else {
-          const dest = sneakFlankTarget(e, dist < 2.8);
-          e.path = findPath(e.x, e.y, dest.x + 0.5, dest.y + 0.5);
-          if (!e.path.length) e.path = [dest];
-          e.pathTimer = dist < 2.4 ? 0.24 : 0.38;
-        }
-      }
-      // Higher aggression once behind
-      let sneakSpeed = e.wanderSpeed;
-      if (behind && dist < 4) sneakSpeed = e.wanderSpeed * (outsideBeam ? 1.38 : 1.18);
-      else if (behind) sneakSpeed = e.wanderSpeed * 1.15;
-      if (e.path && e.path.length) {
-        const t = e.path[0];
-        const tx = t.x + 0.5,
-          ty = t.y + 0.5;
-        const dx = tx - e.x,
-          dy = ty - e.y;
-        const len = Math.hypot(dx, dy) || 1;
-        tryMove(e, dx / len, dy / len, dt, sneakSpeed);
-        if (Math.hypot(tx - e.x, ty - e.y) < 0.15) e.path.shift();
-      }
 
-      const grabRange = behind && outsideBeam ? 0.7 : 0.55;
-      if (now >= invulnUntil && dist < grabRange) {
-        if (enemyInFlashlight(e)) {
-          e.scared = true;
-          e.fleeing = true;
-          e.fleeUntil = now + 900;
-          e.despawnAt = now + 1100;
-          spawnScareText(e);
-          continue;
+      if (aggro) {
+        // Spotted (or brief memory): path to attack; behind-grab once closed in
+        let chaseSp = e.chaseSpeed;
+        if (behind && outsideBeam && dist < 3.5) chaseSp = e.chaseSpeed * 1.12;
+        e.speed = chaseSp;
+        if (e.pathTimer <= 0 || (e.hasSight && behind && dist < 2.0 && (!e.path || !e.path.length))) {
+          if (e.hasSight) {
+            e.path = findPath(e.x, e.y, player.x, player.y);
+            e.pathTimer = dist < 2.0 ? 0.16 : 0.3;
+          } else {
+            e.path = findPath(e.x, e.y, e.lastKnownX, e.lastKnownY);
+            e.pathTimer = 0.45 + Math.random() * 0.2;
+          }
         }
-        triggerCatch("minion");
-        return;
+        stepAlongPath(e, dt, e.speed);
+
+        if (aggro && now >= invulnUntil) {
+          const grabRange = behind && outsideBeam ? 0.7 : 0.55;
+          if (dist < grabRange) {
+            if (enemyInFlashlight(e)) {
+              e.scared = true;
+              e.fleeing = true;
+              e.fleeUntil = now + 900;
+              e.despawnAt = now + 1100;
+              e.hasSight = false;
+              e.chasing = false;
+              e.memoryTimer = 0;
+              spawnScareText(e);
+              continue;
+            }
+            triggerCatch("minion");
+            return;
+          }
+        }
+      } else {
+        // No LOS: aimless room wander — no magic rear-sneak from across the map
+        e.speed = e.wanderSpeed * 0.9;
+        if (e.pathTimer <= 0 || !e.path || !e.path.length) {
+          setAimlessWanderPath(e);
+        }
+        stepAlongPath(e, dt, e.speed);
       }
     }
   }

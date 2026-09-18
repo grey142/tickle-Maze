@@ -3,8 +3,9 @@
  * connected ONLY by open arched doorways in shared walls. No hallways.
  * Seeded RNG so restart keeps the same layout.
  *
- * Sizing (level 1..10), tuned so each room roughly fills the 1600×1120 /
- * CELL=80 camera (~20×14 tiles), shrunk ~1/8 (×7/8):
+ * Sizing (level 1..10), tuned for screen-sized chambers. Camera uses
+ * CELL=112 (~14×10 tiles visible on 1600×1120) — closer zoom; rooms often
+ * need soft follow. Generator sizes (~×7/8 of full viewport at CELL=80):
  *   room size  ~14–19 wide × ~10–14 tall (square or rectangular)
  *   L1 rooms   ~8–20 chambers (ref-map scale; prioritize L1 quality)
  *   map grid   sized to the room cluster + rock border (not 165–290)
